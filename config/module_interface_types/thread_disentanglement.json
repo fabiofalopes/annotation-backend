@@ -1,0 +1,76 @@
+{
+    "name": "thread_disentanglement",
+    "data_schema": {
+        "type": "object",
+        "properties": {
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        },
+                        "content": {
+                            "type": "string"
+                        },
+                        "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                        },
+                        "sender": {
+                            "type": "string"
+                        },
+                        "metadata": {
+                            "type": "object"
+                        }
+                    },
+                    "required": [
+                        "id",
+                        "content",
+                        "sender"
+                    ]
+                }
+            }
+        },
+        "required": [
+            "messages"
+        ]
+    },
+    "annotation_schema": {
+        "type": "object",
+        "properties": {
+            "threads": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": {
+                            "type": "string"
+                        },
+                        "message_ids": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "topic": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "thread_id",
+                        "message_ids"
+                    ]
+                }
+            }
+        },
+        "required": [
+            "threads"
+        ]
+    },
+    "validation_rules": {
+        "message_uniqueness": "Each message can only belong to one thread",
+        "thread_continuity": "Messages in a thread should form a coherent conversation"
+    }
+}
