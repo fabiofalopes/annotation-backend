@@ -9,38 +9,52 @@ This project follows a domain-driven design approach with a clear separation of 
 ```
 annotation-backend-fastapi/
 ├── app/
+│   ├── admin/                # Admin interface
 │   ├── api/                  # API endpoints
-│   │   ├── v1/               # Versioned APIs
-│   │   │   ├── endpoints/    # API route handlers
-│   │   │   └── router.py     # Version-specific router
-│   │   └── dependencies/     # Cross-version dependencies
+│   │   ├── dependencies/     # Cross-version dependencies
+│   │   └── v1/               # Versioned APIs
+│   │       ├── endpoints/    # API route handlers
+│   │       │   └── modules/  # Module-specific endpoints
+│   │       └── router.py     # Version-specific router
 │   ├── core/                 # Core services
 │   │   ├── config.py         # Env-based configuration
 │   │   ├── security.py       # Auth/JWT implementation
 │   │   └── events.py         # Startup/shutdown handlers
 │   ├── domains/              # Domain-driven modules
-│   │   ├── users/            # User domain
-│   │   ├── documents/        # Document domain
 │   │   ├── annotations/      # Annotation domain
+│   │   │   ├── exceptions/   # Domain-specific exceptions
+│   │   │   ├── models/       # Database models
+│   │   │   ├── schemas/      # Pydantic schemas
+│   │   │   └── services/     # Business logic
 │   │   ├── datasets/         # Dataset domain
-│   │   └── module_interfaces/# Module interface domain
+│   │   ├── module_interfaces/# Module interface domain
+│   │   ├── projects/         # Projects domain
+│   │   └── users/            # User domain
 │   ├── infrastructure/       # Infrastructure services
 │   │   └── database.py       # SQLAlchemy setup
+│   ├── utils/                # Utility functions
 │   └── main.py               # App initialization
+├── config/                   # Configuration files
+│   └── module_interface_types/ # Module interface configurations
 ├── data/                     # Data storage (SQLite DB)
 ├── docs/                     # Documentation
+│   ├── images/               # Documentation images
+│   └── schema/               # Database schema visualizations
 ├── examples/                 # Example code
 ├── scripts/                  # Utility scripts
 │   ├── create_annotation_type.py  # Create annotation types
 │   ├── create_dataset.py     # Create test datasets
+│   ├── create_tables.py      # Create database tables
 │   ├── init_db.py            # Initialize database
-│   └── manage.py             # Management commands
+│   ├── manage.py             # Management commands
+│   └── visualize_schema.py   # Generate schema visualizations
 ├── tests/                    # Test suite
 │   ├── integration/          # Integration tests
 │   └── unit/                 # Unit tests
 ├── Dockerfile                # Docker configuration
 ├── docker-compose.yml        # Docker Compose configuration
 ├── requirements.txt          # Dependencies
+├── setup.py                  # Package setup
 └── README.md                 # Project documentation
 ```
 
