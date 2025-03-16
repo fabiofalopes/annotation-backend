@@ -1,35 +1,32 @@
-FROM python:3.9-slim
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
+ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    LOG_LEVEL=debug
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    graphviz \
+RUN apt-get update && apt-get install -y \
     curl \
+    graphviz \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
+# Copy requirements file
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application
 COPY . .
 
-# Make entrypoint script executable
-RUN chmod +x /app/scripts/docker_entrypoint.sh
+# Create data directory
+RUN mkdir -p /app/data
 
-# Create non-root user for security
-RUN adduser --disabled-password --gecos "" appuser && \
-    chown -R appuser:appuser /app
-USER appuser
-
-# Set entrypoint
-ENTRYPOINT ["/app/scripts/docker_entrypoint.sh"]
-
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"] 
+# Command to run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug"] 

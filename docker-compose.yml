@@ -1,19 +1,26 @@
 services:
-  backend:
-    build: .
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./app:/app/app
       - ./data:/app/data
-      - ./scripts:/app/scripts
+      - ./app:/app/app
     environment:
-      - DATABASE_URL=sqlite:////app/data/test.db
+      - DATABASE_URL=sqlite:///data/app.db
+      - SECRET_KEY=your-secret-key-here
       - ENVIRONMENT=development
-    restart: unless-stopped
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=admin123
+      - ADMIN_EMAIL=admin@example.com
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s 
+      start_period: 10s
+
+volumes:
+  data: 

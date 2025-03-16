@@ -1,27 +1,32 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from app.models import Base
+from app.settings import settings
 
-# Get the database URL from environment variable or use a default
-# Use a relative path for local development
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/test.db")
+# Ensure the data directory exists
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# Create SQLAlchemy engine
+# Create engine
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
+    settings.database_url,
+    connect_args={"check_same_thread": False}  # Only needed for SQLite
 )
 
-# Create a SessionLocal class
+# Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create a Base class
-Base = declarative_base()
-
-# Dependency to get DB session
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
-        db.close() 
+        db.close()
+
+def create_tables():
+    from app.models import Base
+    Base.metadata.drop_all(bind=engine)  # Drop all tables
+    Base.metadata.create_all(bind=engine)  # Create all tables 

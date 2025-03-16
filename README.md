@@ -1,152 +1,163 @@
-# Text Annotation API
+# FastAPI Annotation Backend
 
-A FastAPI-based API for text annotation tasks, following best practices for production-grade applications.
-
-## Project Structure
-
-This project follows a domain-driven design approach with a clear separation of concerns:
-
-```
-annotation-backend-fastapi/
-├── app/
-│   ├── admin/                # Admin interface
-│   ├── api/                  # API endpoints
-│   │   ├── dependencies/     # Cross-version dependencies
-│   │   └── v1/               # Versioned APIs
-│   │       ├── endpoints/    # API route handlers
-│   │       │   └── modules/  # Module-specific endpoints
-│   │       └── router.py     # Version-specific router
-│   ├── core/                 # Core services
-│   │   ├── config.py         # Env-based configuration
-│   │   ├── security.py       # Auth/JWT implementation
-│   │   └── events.py         # Startup/shutdown handlers
-│   ├── domains/              # Domain-driven modules
-│   │   ├── annotations/      # Annotation domain
-│   │   │   ├── exceptions/   # Domain-specific exceptions
-│   │   │   ├── models/       # Database models
-│   │   │   ├── schemas/      # Pydantic schemas
-│   │   │   └── services/     # Business logic
-│   │   ├── datasets/         # Dataset domain
-│   │   ├── module_interfaces/# Module interface domain
-│   │   ├── projects/         # Projects domain
-│   │   └── users/            # User domain
-│   ├── infrastructure/       # Infrastructure services
-│   │   └── database.py       # SQLAlchemy setup
-│   ├── utils/                # Utility functions
-│   └── main.py               # App initialization
-├── config/                   # Configuration files
-│   └── module_interface_types/ # Module interface configurations
-├── data/                     # Data storage (SQLite DB)
-├── docs/                     # Documentation
-│   ├── images/               # Documentation images
-│   └── schema/               # Database schema visualizations
-├── examples/                 # Example code
-├── scripts/                  # Utility scripts
-│   ├── create_annotation_type.py  # Create annotation types
-│   ├── create_dataset.py     # Create test datasets
-│   ├── create_tables.py      # Create database tables
-│   ├── init_db.py            # Initialize database
-│   ├── manage.py             # Management commands
-│   └── visualize_schema.py   # Generate schema visualizations
-├── tests/                    # Test suite
-│   ├── integration/          # Integration tests
-│   └── unit/                 # Unit tests
-├── Dockerfile                # Docker configuration
-├── docker-compose.yml        # Docker Compose configuration
-├── requirements.txt          # Dependencies
-├── setup.py                  # Package setup
-└── README.md                 # Project documentation
-```
+A FastAPI-based backend service for managing annotations and related data.
 
 ## Features
 
-- **Domain-Driven Design**: Clear separation of concerns with domain-specific modules
-- **SQLAlchemy ORM**: Robust database access with SQLAlchemy ORM
-- **Joined Table Inheritance**: Flexible annotation model using SQLAlchemy's joined table inheritance
-- **FastAPI**: Modern, fast API framework with automatic OpenAPI documentation
-- **Docker Support**: Containerized deployment with Docker and Docker Compose
-- **Type Annotations**: Full type hinting for better IDE support and code quality
+- RESTful API endpoints for managing annotations
+- SQLite database for data storage
+- Docker support for easy deployment
+- Admin interface for data management
+- Authentication and authorization
+- API documentation with Swagger UI
 
-## Annotation Model
+## Prerequisites
 
-The application uses SQLAlchemy's joined table inheritance to create a flexible annotation model:
+- Docker and Docker Compose
+- Python 3.11+ (for local development)
+- pip (for local development)
 
-- `BaseAnnotation`: Base class for all annotations with common fields
-- Specialized annotation types:
-  - `TextAnnotation`: For text-specific annotations
-  - `ThreadAnnotation`: For thread disentanglement annotations
-  - `SentimentAnnotation`: For sentiment analysis annotations
-
-See [docs/annotation_inheritance.md](docs/annotation_inheritance.md) for more details.
-
-## Setup and Installation
-
-### Local Development
+## Quick Start with Docker
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/annotation-backend-fastapi.git
+   git clone <repository-url>
    cd annotation-backend-fastapi
    ```
 
-2. Create a virtual environment:
+2. Create a `.env` file with your configuration:
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   cp .env.example .env
+   # Edit .env with your settings
    ```
 
-3. Install dependencies:
+3. Build and run the containers:
+   ```bash
+   docker-compose up --build
+   ```
+
+4. Access the API documentation at http://localhost:8000/docs
+
+## Local Development Setup
+
+1. Create a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+2. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. Initialize the database:
+3. Set up environment variables:
    ```bash
-   python scripts/init_db.py
+   cp .env.example .env
+   # Edit .env with your settings
    ```
 
-5. Run the application:
+4. Run the application:
    ```bash
    uvicorn app.main:app --reload
    ```
 
-### Docker Deployment
+## API Documentation
 
-1. Build and start the containers:
-   ```bash
-   docker-compose up -d
-   ```
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
-2. Access the API at http://localhost:8000
+## Project Structure
 
-3. Access the API documentation at http://localhost:8000/docs
-
-## Management Commands
-
-The application includes several management commands:
-
-```bash
-# Initialize the database
-python scripts/init_db.py
-
-# Create an admin user
-python scripts/manage.py create-admin-user <username> <password>
-
-# List all users
-python scripts/manage.py list-users
-
-# Create annotation types
-python scripts/create_annotation_type.py
+```
+.
+├── app/
+│   ├── api/            # API endpoints
+│   ├── core/           # Core functionality
+│   ├── models/         # Database models
+│   ├── schemas/        # Pydantic schemas
+│   └── main.py         # Application entry point
+├── data/              # Database and other data files
+├── tests/             # Test files
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
 ```
 
-## Testing
+## Contributing
 
-Run the tests with pytest:
-
-```bash
-pytest
-```
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-MIT 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Development Setup
+
+### Prerequisites
+
+- Docker and Docker Compose
+
+### Quick Start
+
+1. Clone the repository
+2. Run the development script:
+
+```bash
+./docker-dev.sh start
+```
+
+3. Access the API documentation at http://localhost:8000/docs
+
+### Development Commands
+
+Use the `docker-dev.sh` script for common operations:
+
+```bash
+# Start containers
+./docker-dev.sh start
+
+# View logs
+./docker-dev.sh logs
+
+# Rebuild containers
+./docker-dev.sh rebuild
+
+# Stop containers
+./docker-dev.sh stop
+
+# Clean up everything
+./docker-dev.sh reset
+
+# Open a shell in the container
+./docker-dev.sh shell
+```
+
+## API Structure
+
+- `/users` - User management
+- `/token` - Authentication
+- `/projects` - Project management
+- `/containers` - Data container management
+- `/items` - Data item management
+- `/annotations` - Annotation management
+
+## Data Model
+
+- **User**: Authentication and authorization
+- **Project**: Groups related data containers
+- **DataContainer**: Generic container for any type of data
+- **DataItem**: Individual item that can be annotated
+- **Annotation**: Flexible annotation system for data items
+
+## Example: Chat Disentanglement
+
+1. Create a user and get a token
+2. Create a project
+3. Create a data container with a schema for chat data
+4. Import chat data (JSON) into the container
+5. Create thread annotations on the items 

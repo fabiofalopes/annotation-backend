@@ -1,1 +1,0 @@
-from app.domains.annotations.services.annotation_service import AnnotationService
