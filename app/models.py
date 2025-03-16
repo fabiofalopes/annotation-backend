@@ -35,6 +35,7 @@ class Project(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, index=True)
     description = Column(Text, nullable=True)
+    type = Column(String, index=True)  # Type of project (e.g., "chat_disentanglement")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

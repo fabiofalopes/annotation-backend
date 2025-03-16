@@ -1,16 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqladmin import Admin, ModelView
+from sqlalchemy.orm import Session
 
-from app.database import create_tables, engine
+from app.database import create_tables, engine, get_db
 from app.models import User, Project, DataContainer, DataItem, Annotation
-from app.auth import auth_router
+from app.auth import auth_router, create_user
+from app.api.endpoints.users import router as user_router
 from app.api.endpoints.chat_disentanglement import router as chat_disentanglement_router
-from app.api.endpoints.users import router as users_router
-from app.api.endpoints.projects import router as projects_router
-from app.api.endpoints.containers import router as containers_router
-from app.api.endpoints.items import router as items_router
-from app.api.endpoints.annotations import router as annotations_router
+from app.schemas import UserCreate
+
+# Admin routers
+from app.api.admin.users import router as admin_users_router
+from app.api.admin.projects import router as admin_projects_router
+from app.api.admin.containers import router as admin_containers_router
+from app.api.admin.items import router as admin_items_router
+from app.api.admin.annotations import router as admin_annotations_router
+
 from app.settings import settings
 
 # FastAPI app
@@ -28,6 +34,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# User-facing API routes
+app.include_router(auth_router, prefix="/auth", tags=["authentication"])
+app.include_router(user_router, prefix="/users", tags=["users"])
+app.include_router(chat_disentanglement_router, prefix="/chat-disentanglement", tags=["chat-disentanglement"])
+
+# Admin-only API routes
+admin_app = FastAPI(
+    title="Annotation Backend Admin",
+    description="Administrative endpoints for managing the annotation system",
+    version="0.1.0"
+)
+
+admin_app.include_router(admin_users_router, prefix="/users", tags=["admin-users"])
+admin_app.include_router(admin_projects_router, prefix="/projects", tags=["admin-projects"])
+admin_app.include_router(admin_containers_router, prefix="/containers", tags=["admin-containers"])
+admin_app.include_router(admin_items_router, prefix="/items", tags=["admin-items"])
+admin_app.include_router(admin_annotations_router, prefix="/annotations", tags=["admin-annotations"])
+
+# Mount admin app under /admin-api prefix instead of /admin to avoid conflict with SQLAdmin
+app.mount("/admin-api", admin_app)
 
 # Configure admin views
 class UserAdmin(ModelView, model=User):
@@ -71,7 +98,7 @@ class DataItemAdmin(ModelView, model=DataItem):
     name = "Data Item"
     name_plural = "Data Items"
     icon = "fa-solid fa-file"
-    column_list = [DataItem.id, DataItem.content, DataItem.container_id, DataItem.sequence]
+    column_list = [DataItem.id, DataItem.container_id, DataItem.content]
     column_searchable_list = [DataItem.content]
     can_create = True
     can_edit = True
@@ -81,33 +108,42 @@ class DataItemAdmin(ModelView, model=DataItem):
 class AnnotationAdmin(ModelView, model=Annotation):
     name = "Annotation"
     name_plural = "Annotations"
-    icon = "fa-solid fa-comment"
-    column_list = [Annotation.id, Annotation.item_id, Annotation.created_by_id, Annotation.data]
+    icon = "fa-solid fa-tag"
+    column_list = [Annotation.id, Annotation.item_id, Annotation.type]
+    column_searchable_list = [Annotation.type]
     can_create = True
     can_edit = True
     can_delete = True
     can_view_details = True
 
-# Initialize Admin
+# Initialize SQLAdmin (this will use /admin path)
 admin = Admin(app, engine)
 
-# Register admin views
+# Add model views to admin interface
 admin.add_view(UserAdmin)
 admin.add_view(ProjectAdmin)
 admin.add_view(DataContainerAdmin)
 admin.add_view(DataItemAdmin)
 admin.add_view(AnnotationAdmin)
 
-# Create tables on startup
+# Create tables and default admin user
 @app.on_event("startup")
 async def startup_event():
     create_tables()
-
-# Include routers
-app.include_router(auth_router, tags=["auth"])
-app.include_router(users_router)
-app.include_router(projects_router)
-app.include_router(containers_router)
-app.include_router(items_router)
-app.include_router(annotations_router)
-app.include_router(chat_disentanglement_router) 
+    
+    # Create default admin user if no users exist
+    db = next(get_db())
+    if db.query(User).count() == 0:
+        try:
+            create_user(
+                db,
+                UserCreate(
+                    username="admin",
+                    email="admin@example.com",
+                    password="admin123",
+                    role="admin"
+                )
+            )
+            print("Created default admin user (username: admin, password: admin123)")
+        except Exception as e:
+            print(f"Error creating default admin user: {e}") 

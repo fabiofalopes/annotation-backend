@@ -7,26 +7,33 @@ from app.models import User, Project, DataContainer, DataItem, Annotation
 from app.schemas import AnnotationCreate, AnnotationResponse
 from app.auth import get_current_active_user
 
-router = APIRouter(prefix="/annotations", tags=["annotations"])
+def get_current_admin_user(current_user: User = Depends(get_current_active_user)) -> User:
+    """Dependency to check if current user is an admin"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint requires admin privileges"
+        )
+    return current_user
+
+router = APIRouter(tags=["admin-annotations"])
 
 @router.post("/", response_model=AnnotationResponse)
 def create_annotation(
     annotation: AnnotationCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_admin_user)  # Admin only
 ):
-    # Verify item access
+    """Create a new annotation (admin only)"""
+    # Verify item exists
     item = db.query(DataItem).filter(DataItem.id == annotation.item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    container = db.query(DataContainer).filter(DataContainer.id == item.container_id).first()
-    project = db.query(Project).filter(Project.id == container.project_id).first()
-    if project.created_by_id != current_user.id and current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
     
     db_annotation = Annotation(
         item_id=annotation.item_id,
         data=annotation.data,
+        type=annotation.type,
         created_by_id=current_user.id
     )
     db.add(db_annotation)
@@ -40,35 +47,39 @@ def list_annotations(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_admin_user)  # Admin only
 ):
+    """List all annotations (admin only)"""
     query = db.query(Annotation)
     if item_id:
         item = db.query(DataItem).filter(DataItem.id == item_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-        container = db.query(DataContainer).filter(DataContainer.id == item.container_id).first()
-        project = db.query(Project).filter(Project.id == container.project_id).first()
-        if project.created_by_id != current_user.id and current_user.role != "admin":
-            raise HTTPException(status_code=403, detail="Not enough permissions")
         query = query.filter(Annotation.item_id == item_id)
-    elif current_user.role != "admin":
-        # Regular users can only see annotations from their projects
-        query = query.join(DataItem).join(DataContainer).join(Project).filter(Project.created_by_id == current_user.id)
     return query.offset(skip).limit(limit).all()
 
 @router.get("/{annotation_id}", response_model=AnnotationResponse)
 def get_annotation(
     annotation_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_admin_user)  # Admin only
 ):
+    """Get annotation details (admin only)"""
     annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
     if not annotation:
         raise HTTPException(status_code=404, detail="Annotation not found")
-    item = db.query(DataItem).filter(DataItem.id == annotation.item_id).first()
-    container = db.query(DataContainer).filter(DataContainer.id == item.container_id).first()
-    project = db.query(Project).filter(Project.id == container.project_id).first()
-    if project.created_by_id != current_user.id and current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    return annotation 
+    return annotation
+
+@router.delete("/{annotation_id}", status_code=204)
+def delete_annotation(
+    annotation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)  # Admin only
+):
+    """Delete an annotation (admin only)"""
+    annotation = db.query(Annotation).filter(Annotation.id == annotation_id).first()
+    if not annotation:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+    db.delete(annotation)
+    db.commit()
+    return None 

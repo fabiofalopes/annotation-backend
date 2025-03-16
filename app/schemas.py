@@ -48,6 +48,7 @@ class UserResponse(UserBase):
 class ProjectBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
+    type: str = Field(..., description="Type of project (e.g., 'chat_disentanglement')")
 
 class ProjectCreate(ProjectBase):
     pass

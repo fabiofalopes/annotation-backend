@@ -19,7 +19,7 @@ from app.schemas import (
     ProjectWithContainers, DataContainerWithItems, DataItemWithAnnotations
 )
 
-router = APIRouter(prefix="/chat-disentanglement", tags=["chat-disentanglement"])
+router = APIRouter(tags=["chat-disentanglement"])
 
 # Project-related endpoints
 @router.get("/projects", response_model=List[ProjectResponse])
@@ -81,37 +81,62 @@ async def import_chat_room(
         # Read CSV content
         content = await file.read()
         df = pd.read_csv(StringIO(content.decode()))
-        required_columns = ['turn_id', 'user_id', 'content']
+        
+        # Map columns from VAC_R10.csv format to expected format
+        column_mapping = {
+            'turn_text': 'content',
+            'reply_to_turn': 'reply_to'
+        }
+        df = df.rename(columns=column_mapping)
+        
+        # Verify required columns (strict checking for these)
+        required_columns = ['turn_id', 'user_id', 'content', 'reply_to']
         if not all(col in df.columns for col in required_columns):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"CSV must contain columns: {', '.join(required_columns)}"
             )
 
+        # Find thread column - look for any column containing 'thread' (case insensitive)
+        thread_column = None
+        for col in df.columns:
+            if 'thread' in col.lower():
+                thread_column = col
+                break
+
         # Create container
+        container_name = f"Chat Room {name or file.filename}"
         db_container = DataContainer(
-            name=f"Chat Room {name or file.filename}",
+            name=container_name,
             type="chat_room",
             project_id=project.id,
-            json_schema=ChatRoomSchema(
-                type="object",
-                properties={
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "room_id": {"type": "string"},
+                    "name": {"type": "string"},
                     "messages": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string"},
-                                "timestamp": {"type": "string", "format": "date-time"},
-                                "user": {"type": "string"}
+                                "turn_id": {"type": "string"},
+                                "user_id": {"type": "string"},
+                                "content": {"type": "string"},
+                                "reply_to": {"type": "string", "nullable": True},
+                                "thread": {"type": "string", "nullable": True}
                             },
-                            "required": ["text", "timestamp", "user"]
+                            "required": ["turn_id", "user_id", "content"]
                         }
                     }
                 },
-                required=["messages"]
-            ).model_dump(),
-            created_by_id=current_user.id
+                "required": ["room_id", "name", "messages"]
+            },
+            created_by_id=current_user.id,
+            metadata={
+                "room_id": str(db.query(DataContainer).count() + 1),
+                "name": container_name
+            }
         )
         db.add(db_container)
         db.flush()  # Get container ID without committing
@@ -125,29 +150,34 @@ async def import_chat_room(
                 item_metadata={
                     'turn_id': str(row['turn_id']),
                     'user_id': str(row['user_id']),
-                    'reply_to': str(row['reply_to']) if 'reply_to' in row and pd.notna(row['reply_to']) else None
+                    'reply_to': str(row['reply_to']) if pd.notna(row['reply_to']) else None
                 },
                 sequence=_  # Use DataFrame index as sequence
             )
             db.add(item)
             db.flush()  # Get item ID without committing
 
-            # If thread annotation exists in the CSV, create an annotation
-            if 'thread' in row and pd.notna(row['thread']):
+            # If thread column exists and has a value, create an annotation
+            if thread_column and pd.notna(row[thread_column]):
                 annotation = Annotation(
                     item_id=item.id,
-                    created_by_id=current_user.id,  # Use the importing user as creator
+                    created_by_id=current_user.id,
                     type="thread",
                     data={
-                        "thread_id": str(row['thread']),
+                        "thread_id": str(row[thread_column]),
                         "source": "imported",
-                        "import_timestamp": str(pd.Timestamp.now())
+                        "import_timestamp": str(pd.Timestamp.now()),
+                        "original_column_name": thread_column  # Store original column name for reference
                     }
                 )
                 db.add(annotation)
 
         db.commit()
-        return {"message": "Chat room imported successfully", "container_id": db_container.id}
+        return {
+            "message": "Chat room imported successfully",
+            "container_id": db_container.id,
+            "thread_column_used": thread_column
+        }
 
     except Exception as e:
         db.rollback()

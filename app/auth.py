@@ -14,7 +14,8 @@ from app.settings import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
-auth_router = APIRouter(prefix="/auth", tags=["auth"])
+# Create router without prefix (will be added in main.py)
+auth_router = APIRouter(tags=["authentication"])
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
