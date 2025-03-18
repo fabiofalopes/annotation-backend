@@ -8,6 +8,8 @@ A FastAPI-based backend service for managing annotations and related data.
 - SQLite database for data storage
 - Docker support for easy deployment
 - Admin interface for data management
+- Command-line admin tool for administrative tasks
+- Optional Streamlit-based admin UI (future)
 - Authentication and authorization
 - API documentation with Swagger UI
 
@@ -66,6 +68,8 @@ A FastAPI-based backend service for managing annotations and related data.
 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
+- Admin Interface: http://localhost:8000/admin
+- Admin API: http://localhost:8000/admin-api/docs
 
 ## Project Structure
 
@@ -73,15 +77,43 @@ A FastAPI-based backend service for managing annotations and related data.
 .
 ├── app/
 │   ├── api/            # API endpoints
-│   ├── core/           # Core functionality
-│   ├── models/         # Database models
-│   ├── schemas/        # Pydantic schemas
+│   │   ├── admin/      # Admin-only API endpoints
+│   │   └── endpoints/  # User-facing API endpoints
+│   ├── models.py       # Database models
+│   ├── schemas.py      # Pydantic schemas
+│   ├── auth.py         # Authentication functionality
 │   └── main.py         # Application entry point
-├── data/              # Database and other data files
-├── tests/             # Test files
+├── data/               # Database and other data files
+├── scripts/            # Utility scripts
+│   ├── admin.py        # Admin CLI tool
+│   └── streamlit_admin_ui.py  # Streamlit admin UI (future)
+├── tests/              # Test files
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
+```
+
+## Admin Tools
+
+### Command-Line Admin Tool
+
+The project includes a comprehensive command-line tool for administrative tasks. See the [Admin Tool Documentation](scripts/README.md) for details.
+
+```bash
+# Basic usage examples:
+./scripts/admin.py login admin admin123
+./scripts/admin.py users list
+./scripts/admin.py projects create "New Project" chat_disentanglement
+./scripts/admin.py import chat-room 1 path/to/chat.csv --name "Chat Room"
+```
+
+### Streamlit Admin UI (Future)
+
+A lightweight Streamlit-based UI is included as a proof of concept for the future. See the [Streamlit UI Documentation](scripts/STREAMLIT_UI.md) for details.
+
+```bash
+# Run the Streamlit UI
+streamlit run scripts/streamlit_admin_ui.py
 ```
 
 ## Contributing
@@ -139,12 +171,14 @@ Use the `docker-dev.sh` script for common operations:
 
 ## API Structure
 
+- `/auth` - Authentication
 - `/users` - User management
-- `/token` - Authentication
-- `/projects` - Project management
-- `/containers` - Data container management
-- `/items` - Data item management
-- `/annotations` - Annotation management
+- `/chat-disentanglement` - Chat disentanglement endpoints
+- `/admin-api/users` - Admin user management
+- `/admin-api/projects` - Admin project management
+- `/admin-api/containers` - Admin data container management
+- `/admin-api/items` - Admin data item management
+- `/admin-api/annotations` - Admin annotation management
 
 ## Data Model
 
@@ -159,5 +193,5 @@ Use the `docker-dev.sh` script for common operations:
 1. Create a user and get a token
 2. Create a project
 3. Create a data container with a schema for chat data
-4. Import chat data (JSON) into the container
+4. Import chat data (CSV) into the container
 5. Create thread annotations on the items 
