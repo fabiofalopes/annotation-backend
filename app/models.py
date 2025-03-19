@@ -47,11 +47,11 @@ class DataContainer(Base):
     __tablename__ = "data_containers"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    type = Column(String)  # Type of data container (e.g., "chat_room", "document", etc.)
-    project_id = Column(Integer, ForeignKey("projects.id"))
+    name = Column(String, nullable=False)
+    type = Column(String)  # Type of data container (e.g., "chat_rooms", "documents", etc.)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     json_schema = Column(JSON)  # JSON Schema defining the data structure
-    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

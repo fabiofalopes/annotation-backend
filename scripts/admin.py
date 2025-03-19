@@ -400,7 +400,7 @@ class AnnoBackendAdmin:
             container_id: Container ID
         """
         response = requests.get(
-            f"{self.base_url}/admin-api/containers/{container_id}",
+            f"{self.base_url}/admin-api/containers/{container_id}?include_items=true&include_annotations=true",
             headers=self.headers
         )
         
@@ -435,24 +435,31 @@ class AnnoBackendAdmin:
         
         return container
     
-    def create_container(self, name: str, container_type: str, project_id: int, json_schema: Dict = None):
+    def create_container(
+        self,
+        name: str,
+        container_type: str,
+        project_id: int,
+        metadata_schema: Dict[str, Any] = None,
+        item_schema: Dict[str, Any] = None
+    ):
         """
         Create a new data container.
         
         Args:
             name: Container name
-            container_type: Container type (e.g., "chat_room")
+            container_type: Container type (e.g., "chat_rooms", "documents")
             project_id: Project ID
-            json_schema: JSON schema for the container data (optional)
+            metadata_schema: JSON schema for container metadata
+            item_schema: JSON schema for data items in this container
         """
         data = {
             "name": name,
             "type": container_type,
-            "project_id": project_id
+            "project_id": project_id,
+            "metadata_schema": metadata_schema,
+            "item_schema": item_schema
         }
-        
-        if json_schema:
-            data["json_schema"] = json_schema
         
         response = requests.post(
             f"{self.base_url}/admin-api/containers/",
@@ -470,7 +477,14 @@ class AnnoBackendAdmin:
         
         return container
     
-    def import_chat_room(self, project_id: int, csv_file: str, name: Optional[str] = None):
+    def import_chat_room(
+        self,
+        project_id: int,
+        csv_file: str,
+        name: Optional[str] = None,
+        container_id: Optional[int] = None,
+        metadata_columns: Optional[Dict[str, str]] = None
+    ):
         """
         Import a chat room from a CSV file.
         
@@ -478,64 +492,148 @@ class AnnoBackendAdmin:
             project_id: Project ID
             csv_file: Path to the CSV file
             name: Name for the chat room (optional)
+            container_id: ID of existing container to import into (optional)
+            metadata_columns: Mapping of metadata column types to CSV column names
         """
+        # First verify the project exists and is of the correct type
+        try:
+            project = self.get_project(project_id)
+            if not project:
+                print(f"Error: Project {project_id} not found")
+                sys.exit(1)
+            if project.get('type') != 'chat_disentanglement':
+                print(f"Error: Project {project_id} is not a chat disentanglement project")
+                sys.exit(1)
+        except Exception as e:
+            print(f"Error verifying project: {e}")
+            sys.exit(1)
+
         if not os.path.exists(csv_file):
             print(f"Error: File {csv_file} does not exist")
             sys.exit(1)
         
-        # Validate the CSV file has the required columns
+        # Read and validate CSV before upload
         try:
             df = pd.read_csv(csv_file)
-            required_columns = ['turn_id', 'user_id', 'content', 'reply_to']
             
-            # Check for column mapping
-            column_mapping = {}
-            for req_col in required_columns:
-                if req_col not in df.columns:
-                    # Look for similar columns
-                    for col in df.columns:
-                        if req_col in col.lower() or (req_col == 'content' and 'text' in col.lower()):
-                            column_mapping[col] = req_col
-                            break
+            # Check if this is a pre-mapped CSV (from Streamlit UI)
+            required_columns = ['turn_id', 'user_id', 'turn_text', 'reply_to_turn']
+            using_premapped_csv = set(required_columns).issubset(df.columns)
             
-            # Apply mapping if needed
-            if column_mapping:
-                df = df.rename(columns=column_mapping)
-            
-            # Verify required columns exist
-            missing_cols = [col for col in required_columns if col not in df.columns]
-            if missing_cols:
-                print(f"Error: CSV file is missing required columns: {missing_cols}")
-                print(f"Available columns: {df.columns.tolist()}")
-                sys.exit(1)
+            if using_premapped_csv:
+                print(f"Detected pre-mapped CSV with {len(df)} rows")
+                print(f"Columns detected: {', '.join(df.columns)}")
+            else:
+                # Define standard column mappings for auto-detection
+                standard_columns = {
+                    'turn_id': ['turn_id', 'turn id', 'turnid', 'turn', 'message_id', 'msg_id', 'id'],
+                    'user_id': ['user_id', 'user id', 'userid', 'user', 'speaker', 'speaker_id', 'author'],
+                    'turn_text': ['turn_text', 'text', 'content', 'message', 'turn_content', 'msg_text', 'message_text'],
+                    'reply_to_turn': ['reply_to_turn', 'reply_to', 'replyto', 'in_reply_to', 'parent_id', 'reply']
+                }
+                
+                # Auto-detect columns if metadata_columns is not provided
+                if not metadata_columns:
+                    metadata_columns = {}
+                    
+                    # First try exact matches
+                    for target_col, variations in standard_columns.items():
+                        for col in df.columns:
+                            if col.lower() in [v.lower() for v in variations]:
+                                metadata_columns[target_col] = col
+                                break
+                
+                # Check if all required columns are present
+                missing_columns = [col for col in required_columns if col not in metadata_columns]
+                
+                if missing_columns:
+                    print(f"Error: Missing required column mappings: {', '.join(missing_columns)}")
+                    print(f"Available columns: {', '.join(df.columns)}")
+                    print(f"Current mappings: {metadata_columns}")
+                    sys.exit(1)
+                
+                print(f"CSV validated with {len(df)} rows. Column mappings:")
+                for target, source in metadata_columns.items():
+                    print(f"  {target} -> {source}")
         except Exception as e:
             print(f"Error validating CSV file: {e}")
             sys.exit(1)
+        
+        # Debug information
+        print(f"\nImporting chat room:")
+        print(f"Project ID: {project_id}")
+        print(f"CSV File: {csv_file}")
+        print(f"Name: {name}")
+        print(f"Container ID: {container_id}")
+        if not using_premapped_csv:
+            print(f"Column Mappings: {metadata_columns}")
+        else:
+            print("Using pre-mapped CSV columns directly")
         
         # Upload the file
         files = {
             "file": (os.path.basename(csv_file), open(csv_file, "rb"), "text/csv")
         }
         
-        data = {}
+        # Prepare form data
+        data = {
+            "project_id": str(project_id)  # Convert to string for multipart/form-data
+        }
         if name:
             data["name"] = name
+        if container_id:
+            data["container_id"] = str(container_id)  # Convert to string for multipart/form-data
+        if metadata_columns and not using_premapped_csv:
+            data["metadata_columns"] = json.dumps(metadata_columns)
         
-        response = requests.post(
-            f"{self.base_url}/chat-disentanglement/projects/{project_id}/rooms/import",
-            files=files,
-            data=data,
-            headers=self.headers
-        )
+        # Debug request data
+        print("Request data:")
+        print(f"Files: {files}")
+        print(f"Form data: {data}")
         
-        result = self._handle_response(response)
-        
-        if isinstance(result, dict) and "message" in result:
-            print(result["message"])
-        else:
-            print(f"Chat room imported successfully from {csv_file}")
-        
-        return result
+        # Make the request
+        try:
+            # Use the primary endpoint only
+            response = requests.post(
+                f"{self.base_url}/chat-disentanglement/projects/{project_id}/rooms/import",
+                files=files,
+                data=data,
+                headers=self.headers
+            )
+            
+            # Debug response
+            print(f"Response status code: {response.status_code}")
+            print(f"Response headers: {response.headers}")
+            print(f"Response text: {response.text}")  # Add this line for more debugging
+            
+            if response.status_code != 201:
+                print(f"Error response: {response.text}")
+                if response.status_code == 400:
+                    try:
+                        error_data = response.json()
+                        print(f"API Error: {error_data.get('detail', 'Unknown error')}")
+                    except:
+                        print(f"Bad request: {response.text}")
+                elif response.status_code == 404:
+                    print("Resource not found - Check that the project ID exists and you have access to it.")
+                else:
+                    print(f"Server error: HTTP {response.status_code}")
+                sys.exit(1)
+            
+            result = self._handle_response(response)
+            print(f"Import successful! Container ID: {result.get('container_id')}")
+            if result.get('direct_columns_used'):
+                print("Used direct column mapping from pre-mapped CSV")
+            elif 'column_mapping' in result and isinstance(result['column_mapping'], dict):
+                print("Used column mappings:")
+                for target, source in result['column_mapping'].items():
+                    print(f"  {target} -> {source}")
+            print(f"Imported {result.get('items_imported', 0)} items")
+            
+            return result
+        except Exception as e:
+            print(f"Error during import: {e}")
+            sys.exit(1)
 
 
 def main():
@@ -617,7 +715,7 @@ def main():
     
     container_create_parser = container_subparsers.add_parser('create', help='Create a new data container')
     container_create_parser.add_argument('name', help='Container name')
-    container_create_parser.add_argument('type', help='Container type (e.g., "chat_room")')
+    container_create_parser.add_argument('type', help='Container type (e.g., "chat_rooms")')
     container_create_parser.add_argument('project_id', type=int, help='Project ID')
     container_create_parser.add_argument('--schema-file', help='Path to JSON schema file')
     
@@ -629,6 +727,8 @@ def main():
     import_chat_parser.add_argument('project_id', type=int, help='Project ID')
     import_chat_parser.add_argument('csv_file', help='Path to the CSV file')
     import_chat_parser.add_argument('--name', help='Name for the chat room')
+    import_chat_parser.add_argument('--container-id', type=int, help='ID of existing container to import into')
+    import_chat_parser.add_argument('--metadata-columns', type=str, help='Mapping of metadata column types to CSV column names')
     
     args = parser.parse_args()
     
@@ -693,7 +793,7 @@ def main():
         if not args.subcommand:
             import_parser.print_help()
         elif args.subcommand == 'chat-room':
-            admin.import_chat_room(args.project_id, args.csv_file, args.name)
+            admin.import_chat_room(args.project_id, args.csv_file, args.name, args.container_id, args.metadata_columns)
 
 
 if __name__ == '__main__':

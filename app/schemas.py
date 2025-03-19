@@ -64,21 +64,48 @@ class ProjectResponse(ProjectBase):
 # Data Container Schemas
 # =========================================================
 
+class ContainerType(str, Enum):
+    CHAT_ROOMS = 'chat_rooms'
+    DOCUMENTS = 'documents'
+    # Add more container types as needed
+
+class DataItemType(str, Enum):
+    CHAT_TURN = 'chat_turn'
+    DOCUMENT_PARAGRAPH = 'document_paragraph'
+    # Add more data item types as needed
+
+class ChatRoomMetadata(BaseModel):
+    """Metadata specific to a chat room"""
+    room_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    participants: Optional[List[str]] = None
+    timestamp: Optional[datetime] = None
+
+class ChatTurnMetadata(BaseModel):
+    """Metadata specific to a chat turn"""
+    turn_id: str
+    user_id: str
+    reply_to: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    thread_id: Optional[str] = None
+
 class DataContainerBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
-    type: str = Field(..., description="Type of data container (e.g., 'chat_room', 'document')")
-    json_schema: Dict[str, Any]  # JSON Schema
+    type: ContainerType = Field(..., description="Type of data container (e.g., 'chat_rooms', 'documents')")
+    metadata_schema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for container metadata")
+    item_schema: Optional[Dict[str, Any]] = Field(None, description="JSON Schema for data items in this container")
+
+    @validator('metadata_schema', 'item_schema')
+    def validate_schema(cls, v):
+        if v is not None and not isinstance(v, dict):
+            raise ValueError('Schema must be a valid JSON object')
+        return v
 
 class DataContainerCreate(DataContainerBase):
     project_id: int
     raw_data: Optional[Dict[str, Any]] = None  # Optional during creation
-
-    @validator('json_schema')
-    def validate_schema(cls, v):
-        if not isinstance(v, dict):
-            raise ValueError('Schema must be a valid JSON object')
-        return v
 
 class DataContainerResponse(DataContainerBase):
     id: int
@@ -95,9 +122,18 @@ class DataContainerResponse(DataContainerBase):
 
 class DataItemBase(BaseModel):
     content: str
+    type: DataItemType
     item_metadata: Optional[Dict[str, Any]] = None
     parent_id: Optional[int] = None
     sequence: Optional[int] = None
+
+    @validator('item_metadata')
+    def validate_metadata(cls, v, values):
+        if v is not None:
+            item_type = values.get('type')
+            if item_type == DataItemType.CHAT_TURN:
+                ChatTurnMetadata(**v)
+        return v
 
 class DataItemCreate(DataItemBase):
     container_id: int
@@ -106,6 +142,7 @@ class DataItemResponse(DataItemBase):
     id: int
     container_id: int
     created_at: datetime
+    annotations: List["AnnotationResponse"] = []
 
     class Config:
         from_attributes = True

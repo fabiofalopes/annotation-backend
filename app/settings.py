@@ -35,9 +35,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "ignore"  # Ignore extra fields
+    }
 
 # Create global settings instance
 settings = Settings() 

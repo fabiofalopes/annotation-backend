@@ -33,9 +33,25 @@ async def list_chat_projects(
         if project.type == "chat_disentanglement"
     ]
 
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_chat_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get a specific chat disentanglement project"""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.type == "chat_disentanglement"
+    ).first()
+    if not project or current_user not in project.users:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
 @router.get("/projects/{project_id}/rooms", response_model=List[DataContainerResponse])
 async def list_chat_rooms(
     project_id: int,
+    container_type: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -48,26 +64,37 @@ async def list_chat_rooms(
     if not project or current_user not in project.users:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    return db.query(DataContainer).filter(
-        DataContainer.project_id == project_id,
-        DataContainer.type == "chat_room"
-    ).all()
+    # Base query
+    query = db.query(DataContainer).filter(DataContainer.project_id == project_id)
+    
+    # Apply container type filter if specified
+    if container_type:
+        query = query.filter(DataContainer.type == container_type)
+    
+    return query.all()
 
 @router.post("/projects/{project_id}/rooms/import", status_code=status.HTTP_201_CREATED)
+@router.post("/projects/{project_id}/containers/import", status_code=status.HTTP_201_CREATED)
 async def import_chat_room(
     project_id: int,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
+    container_id: Optional[int] = Form(None),
+    metadata_columns: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """Import a chat room from a CSV file.
     
-    Expected CSV format:
-    turn_id,user_id,content,reply_to,thread
-    1,user1,"Hello!",null,thread1
-    2,user2,"Hi there!",1,thread1
+    The CSV should contain the following columns (or their mapped equivalents):
+    - turn_id: Unique identifier for each turn
+    - user_id: ID of the user who sent the message
+    - turn_text: The message content
+    - reply_to_turn: ID of the turn this message replies to
+    - thread: Optional thread identifier
+    
+    The metadata_columns parameter can be used to specify custom mappings from 
+    CSV column names to the standard field names.
     """
     try:
         # Verify project access and type
@@ -78,87 +105,156 @@ async def import_chat_room(
         if not project or current_user not in project.users:
             raise HTTPException(status_code=404, detail="Project not found")
 
+        # Get or create container
+        if container_id:
+            container = db.query(DataContainer).filter(
+                DataContainer.id == container_id,
+                DataContainer.project_id == project_id
+            ).first()
+            if not container or container.project_id != project_id:
+                raise HTTPException(status_code=404, detail="Container not found")
+            db_container = container
+        else:
+            # Create new container
+            container_name = name or f"Chat Room from {file.filename}"
+            db_container = DataContainer(
+                name=container_name,
+                type="chat_rooms",  # Fixed container type for chat rooms
+                project_id=project.id,
+                created_by_id=current_user.id,
+                metadata={
+                    "room_id": str(db.query(DataContainer).count() + 1),
+                    "name": container_name,
+                    "source_file": file.filename
+                }
+            )
+            db.add(db_container)
+            db.flush()
+
         # Read CSV content
         content = await file.read()
         df = pd.read_csv(StringIO(content.decode()))
         
-        # Map columns from VAC_R10.csv format to expected format
-        column_mapping = {
-            'turn_text': 'content',
-            'reply_to_turn': 'reply_to'
-        }
-        df = df.rename(columns=column_mapping)
+        # Check if we have already mapped columns (from UI) or need to auto-detect
+        column_mapping = {}
+        use_direct_columns = False
+        thread_column = "thread"
         
-        # Verify required columns (strict checking for these)
-        required_columns = ['turn_id', 'user_id', 'content', 'reply_to']
-        if not all(col in df.columns for col in required_columns):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"CSV must contain columns: {', '.join(required_columns)}"
-            )
-
-        # Find thread column - look for any column containing 'thread' (case insensitive)
-        thread_column = None
-        for col in df.columns:
-            if 'thread' in col.lower():
-                thread_column = col
-                break
-
-        # Create container
-        container_name = f"Chat Room {name or file.filename}"
-        db_container = DataContainer(
-            name=container_name,
-            type="chat_room",
-            project_id=project.id,
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "room_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "messages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "turn_id": {"type": "string"},
-                                "user_id": {"type": "string"},
-                                "content": {"type": "string"},
-                                "reply_to": {"type": "string", "nullable": True},
-                                "thread": {"type": "string", "nullable": True}
-                            },
-                            "required": ["turn_id", "user_id", "content"]
-                        }
-                    }
-                },
-                "required": ["room_id", "name", "messages"]
-            },
-            created_by_id=current_user.id,
-            metadata={
-                "room_id": str(db.query(DataContainer).count() + 1),
-                "name": container_name
-            }
-        )
-        db.add(db_container)
-        db.flush()  # Get container ID without committing
-
+        if set(["turn_id", "user_id", "turn_text", "reply_to_turn"]).issubset(df.columns):
+            # This is already a mapped CSV (from Streamlit UI)
+            use_direct_columns = True
+            required_fields = ["turn_id", "user_id", "turn_text", "reply_to_turn"]
+            if "thread" in df.columns:
+                thread_column = "thread"
+        else:
+            # Parse metadata columns if provided
+            if metadata_columns:
+                try:
+                    # Parse the JSON metadata columns
+                    parsed_mapping = json.loads(metadata_columns)
+                    
+                    # Check if it's a simple mapping or complex structure
+                    if isinstance(parsed_mapping, dict):
+                        # Extract column mappings
+                        for field, col_name in parsed_mapping.items():
+                            if field != "thread_id" and field in ["turn_id", "user_id", "turn_text", "reply_to_turn"]:
+                                column_mapping[field] = col_name
+                            elif field == "thread_id" or field == "thread":
+                                thread_column = col_name
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid metadata_columns format. Expected JSON object."
+                    )
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Error processing metadata_columns: {str(e)}"
+                    )
+            
+            # If no column mapping was provided or it's incomplete, try auto-detection
+            required_fields = ["turn_id", "user_id", "turn_text", "reply_to_turn"]
+            
+            # Use auto-detection for any missing fields
+            for field in required_fields:
+                if field not in column_mapping:
+                    # Try exact match first
+                    if field in df.columns:
+                        column_mapping[field] = field
+                    else:
+                        # Try common variations based on field
+                        variations = []
+                        if field == "turn_id":
+                            variations = ["turn id", "turnid", "turn", "message_id", "msg_id", "id"]
+                        elif field == "user_id":
+                            variations = ["user id", "userid", "user", "speaker", "speaker_id", "author"]
+                        elif field == "turn_text":
+                            variations = ["text", "content", "message", "turn_content", "msg_text", "message_text"]
+                        elif field == "reply_to_turn":
+                            variations = ["reply_to", "replyto", "in_reply_to", "parent_id", "reply"]
+                        
+                        # Check for variations
+                        for col in df.columns:
+                            if col.lower() in [v.lower() for v in variations]:
+                                column_mapping[field] = col
+                                break
+            
+            # Verify all required fields are mapped
+            missing_fields = [field for field in required_fields if field not in column_mapping]
+            if missing_fields:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Missing required column mappings: {', '.join(missing_fields)}. Available columns: {', '.join(df.columns)}"
+                )
+            
+            # Try to find thread column if not specified
+            if not thread_column:
+                for col in df.columns:
+                    if "thread" in col.lower():
+                        thread_column = col
+                        break
+        
         # Process rows
-        for _, row in df.iterrows():
-            # Create data item
-            item = DataItem(
-                container_id=db_container.id,
-                content=str(row['content']),
-                item_metadata={
+        for idx, row in df.iterrows():
+            # Create data item with appropriate mapping method
+            if use_direct_columns:
+                # If columns are already mapped in the CSV (from UI)
+                item_metadata = {
                     'turn_id': str(row['turn_id']),
                     'user_id': str(row['user_id']),
-                    'reply_to': str(row['reply_to']) if pd.notna(row['reply_to']) else None
-                },
-                sequence=_  # Use DataFrame index as sequence
+                    'reply_to': str(row['reply_to_turn']) if pd.notna(row['reply_to_turn']) else None
+                }
+                
+                # Add thread_id to metadata if present in CSV
+                if thread_column in df.columns and pd.notna(row[thread_column]):
+                    item_metadata['thread_id'] = str(row[thread_column])
+                
+                content = str(row['turn_text'])
+            else:
+                # If using source column mapping
+                item_metadata = {
+                    'turn_id': str(row[column_mapping['turn_id']]),
+                    'user_id': str(row[column_mapping['user_id']]),
+                    'reply_to': str(row[column_mapping['reply_to_turn']]) if pd.notna(row[column_mapping['reply_to_turn']]) else None
+                }
+                
+                # Add thread_id to metadata if present in CSV
+                if thread_column and thread_column in df.columns and pd.notna(row[thread_column]):
+                    item_metadata['thread_id'] = str(row[thread_column])
+                
+                content = str(row[column_mapping['turn_text']])
+            
+            item = DataItem(
+                container_id=db_container.id,
+                content=content,
+                item_metadata=item_metadata,
+                sequence=idx
             )
             db.add(item)
             db.flush()  # Get item ID without committing
 
-            # If thread column exists and has a value, create an annotation
-            if thread_column and pd.notna(row[thread_column]):
+            # Create thread annotation if thread column exists
+            if thread_column and thread_column in df.columns and pd.notna(row[thread_column]):
                 annotation = Annotation(
                     item_id=item.id,
                     created_by_id=current_user.id,
@@ -167,23 +263,41 @@ async def import_chat_room(
                         "thread_id": str(row[thread_column]),
                         "source": "imported",
                         "import_timestamp": str(pd.Timestamp.now()),
-                        "original_column_name": thread_column  # Store original column name for reference
+                        "original_column": thread_column
                     }
                 )
                 db.add(annotation)
 
+        # Commit all changes
         db.commit()
-        return {
+        
+        # Prepare detailed response
+        response_data = {
             "message": "Chat room imported successfully",
             "container_id": db_container.id,
-            "thread_column_used": thread_column
+            "items_imported": len(df),
+            "column_mapping": column_mapping if not use_direct_columns else "direct",
+            "direct_columns_used": use_direct_columns,
+            "mapped_columns": {
+                "turn_id": column_mapping.get("turn_id") if not use_direct_columns else "turn_id",
+                "user_id": column_mapping.get("user_id") if not use_direct_columns else "user_id",
+                "turn_text": column_mapping.get("turn_text") if not use_direct_columns else "turn_text",
+                "reply_to_turn": column_mapping.get("reply_to_turn") if not use_direct_columns else "reply_to_turn",
+                "thread": thread_column
+            },
+            "available_columns": list(df.columns)
         }
+        
+        return response_data
 
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=f"Error importing data: {str(e)}"
         )
 
 @router.get("/rooms/{room_id}/turns", response_model=List[ChatTurn])
@@ -196,7 +310,7 @@ async def list_chat_turns(
     # Verify container access and type
     container = db.query(DataContainer).filter(
         DataContainer.id == room_id,
-        DataContainer.type == "chat_room"
+        DataContainer.type == "chat_rooms"
     ).first()
     if not container or current_user not in container.project.users:
         raise HTTPException(status_code=404, detail="Chat room not found")
@@ -231,7 +345,7 @@ async def list_threads(
     # Verify container access and type
     container = db.query(DataContainer).filter(
         DataContainer.id == room_id,
-        DataContainer.type == "chat_room"
+        DataContainer.type == "chat_rooms"
     ).first()
     if not container or current_user not in container.project.users:
         raise HTTPException(status_code=404, detail="Chat room not found")
@@ -280,7 +394,7 @@ async def annotate_thread(
     # Verify container access and type
     container = db.query(DataContainer).filter(
         DataContainer.id == room_id,
-        DataContainer.type == "chat_room"
+        DataContainer.type == "chat_rooms"
     ).first()
     if not container or current_user not in container.project.users:
         raise HTTPException(status_code=404, detail="Chat room not found")
@@ -495,3 +609,32 @@ async def get_code_schema(
     }
     
     return schema_info 
+
+@router.get("/debug/info")
+async def get_debug_info(
+    current_user: User = Depends(get_current_active_user)
+):
+    """Debug endpoint to check API connectivity"""
+    return {
+        "username": current_user.username,
+        "routes": [
+            {"path": "/projects", "method": "GET", "description": "List projects"},
+            {"path": "/projects/{project_id}/rooms", "method": "GET", "description": "List rooms in project"},
+            {"path": "/projects/{project_id}/rooms/import", "method": "POST", "description": "Import chat room data"},
+            {"path": "/projects/{project_id}/containers/import", "method": "POST", "description": "Alternative import endpoint"}
+        ],
+        "message": "If you can see this, the API connection is working"
+    } 
+
+@router.get("/debug/routes")
+async def list_routes():
+    """List all routes registered in this router for debugging"""
+    routes = []
+    for route in router.routes:
+        routes.append({
+            "path": route.path,
+            "name": route.name,
+            "methods": list(route.methods),
+            "endpoint": route.endpoint.__name__ if hasattr(route.endpoint, "__name__") else str(route.endpoint)
+        })
+    return {"routes": routes} 

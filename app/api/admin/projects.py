@@ -30,6 +30,9 @@ def create_project(
         description=project.description,
         type=project.type  # e.g., "chat_disentanglement"
     )
+    # Add the admin user to the project's users list
+    db_project.users.append(current_user)
+    
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
