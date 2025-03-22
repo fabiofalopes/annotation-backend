@@ -189,6 +189,61 @@ class DataItemWithAnnotations(DataItemResponse):
     annotations: List[AnnotationResponse] = []
 
 # =========================================================
+# Import Operation Schemas
+# =========================================================
+
+class ImportStatus(BaseModel):
+    id: str
+    status: str
+    filename: str
+    total_rows: int = 0
+    processed_rows: int = 0
+    errors: List[str] = []
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    container_id: int
+    metadata_columns: Optional[Dict[str, str]] = None
+
+    class Config:
+        from_attributes = True
+
+class ImportProgress(BaseModel):
+    id: str
+    status: str
+    filename: str
+    total_rows: int
+    processed_rows: int
+    errors: List[str]
+    start_time: datetime
+    end_time: Optional[datetime]
+    container_id: int
+
+    @property
+    def progress_percentage(self) -> float:
+        if self.total_rows == 0:
+            return 0
+        return (self.processed_rows / self.total_rows) * 100
+
+    @property
+    def duration_seconds(self) -> Optional[float]:
+        if not self.end_time:
+            if self.status in ["completed", "failed", "cancelled"]:
+                return None
+            return (datetime.now() - self.start_time).total_seconds()
+        return (self.end_time - self.start_time).total_seconds()
+
+    class Config:
+        from_attributes = True
+
+class BulkImportResponse(BaseModel):
+    message: str
+    import_ids: List[str]
+    container_id: int
+
+    class Config:
+        from_attributes = True
+
+# =========================================================
 # Chat Room Specific Schemas
 # =========================================================
 

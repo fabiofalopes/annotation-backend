@@ -1,46 +1,49 @@
-from sqlalchemy import Column, Integer, String, JSON, ForeignKey, DateTime, Text, Boolean, func, Table
+from sqlalchemy import Column, Integer, String, JSON, ForeignKey, DateTime, Text, Boolean, func, Table, ARRAY
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
 Base = declarative_base()
 
 # Association tables
-project_user = Table(
-    "project_user",
+project_users = Table(
+    "project_users",
     Base.metadata,
-    Column("project_id", Integer, ForeignKey("projects.id")),
-    Column("user_id", Integer, ForeignKey("users.id"))
+    Column("project_id", Integer, ForeignKey("projects.id"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True)
 )
 
 class User(Base):
     """User model for authentication and authorization"""
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    role = Column(String, default='annotator')  # Values: 'annotator' or 'admin'
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, nullable=False)
+    email = Column(String, unique=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, nullable=False, default="annotator")  # annotator, admin
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    projects = relationship("Project", secondary=project_user, back_populates="users")
+    created_projects = relationship("Project", back_populates="created_by")
+    projects = relationship("Project", secondary="project_users", back_populates="users")
     annotations = relationship("Annotation", back_populates="created_by")
 
 class Project(Base):
     """Project model to group related data containers"""
     __tablename__ = "projects"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, index=True)
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # e.g., "chat_disentanglement", "document_annotation"
     description = Column(Text, nullable=True)
-    type = Column(String, index=True)  # Type of project (e.g., "chat_disentanglement")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     # Relationships
-    users = relationship("User", secondary=project_user, back_populates="projects")
-    containers = relationship("DataContainer", back_populates="project")
+    created_by = relationship("User", back_populates="created_projects")
+    users = relationship("User", secondary="project_users", back_populates="projects")
+    containers = relationship("DataContainer", back_populates="project", cascade="all, delete-orphan")
 
 class DataContainer(Base):
     """Generic container for any type of data (e.g., chat rooms, image sets)"""

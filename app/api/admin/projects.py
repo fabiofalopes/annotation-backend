@@ -28,7 +28,8 @@ def create_project(
     db_project = Project(
         name=project.name,
         description=project.description,
-        type=project.type  # e.g., "chat_disentanglement"
+        type=project.type,  # e.g., "chat_disentanglement"
+        created_by_id=current_user.id  # Set the creator
     )
     # Add the admin user to the project's users list
     db_project.users.append(current_user)

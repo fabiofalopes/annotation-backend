@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Form, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Type
+from typing import List, Optional, Dict, Type, Any
 import pandas as pd
 from io import StringIO
 import json
@@ -8,6 +8,11 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import class_mapper
 from pydantic import BaseModel
 import inspect as python_inspect
+import tempfile
+import os
+import asyncio
+from datetime import datetime
+import uuid
 
 from app.database import get_db, engine
 from app.models import User, Project, DataContainer, DataItem, Annotation
@@ -16,10 +21,411 @@ from app.schemas import (
     ChatRoomImport, ChatRoomSchema, ChatTurn,
     ProjectResponse, DataContainerResponse,
     ProjectCreate, DataContainerCreate, DataItemCreate, AnnotationCreate,
-    ProjectWithContainers, DataContainerWithItems, DataItemWithAnnotations
+    ProjectWithContainers, DataContainerWithItems, DataItemWithAnnotations,
+    ImportStatus, BulkImportResponse, ImportProgress
 )
 
 router = APIRouter(tags=["chat-disentanglement"])
+
+# Track import progress in memory
+import_progress: Dict[str, Dict] = {}
+
+async def process_import_in_background(
+    import_id: str,
+    project_id: int,
+    file_path: str,
+    container_id: Optional[int],
+    name: Optional[str],
+    metadata_columns: Optional[Dict[str, str]],
+    batch_size: int,
+    db: Session,
+    current_user: User
+):
+    """Process import in background"""
+    try:
+        import_progress[import_id] = ImportProgress(
+            id=import_id,
+            status="processing",
+            total_rows=0,
+            processed_rows=0,
+            errors=[],
+            start_time=datetime.now()
+        )
+
+        # Get total rows first
+        for chunk in pd.read_csv(file_path, chunksize=batch_size):
+            import_progress[import_id].total_rows += len(chunk)
+
+        # Process the file
+        container = await import_chat_room_internal(
+            project_id=project_id,
+            file_path=file_path,
+            container_id=container_id,
+            name=name,
+            metadata_columns=metadata_columns,
+            batch_size=batch_size,
+            db=db,
+            current_user=current_user,
+            progress_callback=lambda processed: update_import_progress(import_id, processed)
+        )
+
+        import_progress[import_id].status = "completed"
+        import_progress[import_id].container_id = container.id
+        import_progress[import_id].end_time = datetime.now()
+
+    except Exception as e:
+        import_progress[import_id].status = "failed"
+        import_progress[import_id].errors.append(str(e))
+        import_progress[import_id].end_time = datetime.now()
+        raise
+
+    finally:
+        # Clean up temporary file
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+
+def update_import_progress(import_id: str, processed_rows: int):
+    """Update import progress"""
+    if import_id in import_progress:
+        import_progress[import_id].processed_rows = processed_rows
+
+@router.post("/projects/{project_id}/rooms/import", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/projects/{project_id}/containers/import", status_code=status.HTTP_202_ACCEPTED)
+async def import_chat_room(
+    background_tasks: BackgroundTasks,
+    project_id: int,
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    container_id: Optional[int] = Form(None),
+    metadata_columns: Optional[str] = Form(None),
+    batch_size: Optional[int] = Form(1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> ImportStatus:
+    """Import a chat room from a CSV file.
+    
+    The CSV should contain the following columns (or their mapped equivalents):
+    - turn_id: Unique identifier for each turn
+    - user_id: ID of the user who sent the message
+    - turn_text: The message content
+    - reply_to_turn: ID of the turn this message replies to
+    - thread: Optional thread identifier
+    
+    The metadata_columns parameter can be used to specify custom mappings from 
+    CSV column names to the standard field names.
+
+    Returns an import ID that can be used to track progress.
+    """
+    try:
+        # Verify project access and type
+        project = db.query(Project).filter(
+            Project.id == project_id,
+            Project.type == "chat_disentanglement"
+        ).first()
+        if not project or current_user not in project.users:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file.flush()
+            file_path = temp_file.name
+
+        # Generate import ID
+        import_id = f"import_{datetime.now().timestamp()}_{file.filename}"
+
+        # Start background task
+        background_tasks.add_task(
+            process_import_in_background,
+            import_id=import_id,
+            project_id=project_id,
+            file_path=file_path,
+            container_id=container_id,
+            name=name,
+            metadata_columns=json.loads(metadata_columns) if metadata_columns else None,
+            batch_size=batch_size,
+            db=db,
+            current_user=current_user
+        )
+
+        return ImportStatus(
+            import_id=import_id,
+            status="pending",
+            message="Import started"
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error starting import: {str(e)}"
+        )
+
+@router.get("/imports/{import_id}", response_model=ImportProgress)
+async def get_import_progress(
+    import_id: str,
+    current_user: User = Depends(get_current_active_user)
+) -> ImportProgress:
+    """Get the progress of an import operation"""
+    if import_id not in import_progress:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Import not found"
+        )
+    return import_progress[import_id]
+
+@router.post("/projects/{project_id}/rooms/bulk-import", response_model=BulkImportResponse)
+async def bulk_import_chat_rooms(
+    project_id: int,
+    files: List[UploadFile] = File(...),
+    container_id: Optional[int] = Form(None),
+    metadata_columns: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk import multiple chat rooms from CSV files.
+    """
+    # Verify project access
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check if user has access to the project
+    if current_user not in project.users:
+        raise HTTPException(status_code=403, detail="Not authorized to access this project")
+    
+    if project.type != "chat_disentanglement":
+        raise HTTPException(status_code=400, detail="Project is not a chat disentanglement project")
+
+    # Parse metadata columns if provided
+    try:
+        metadata_mappings = json.loads(metadata_columns) if metadata_columns else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid metadata_columns JSON")
+
+    # Create or get container
+    container = None
+    if container_id:
+        container = db.query(DataContainer).filter(
+            DataContainer.id == container_id,
+            DataContainer.project_id == project_id
+        ).first()
+        if not container:
+            raise HTTPException(status_code=404, detail="Container not found")
+    else:
+        container = DataContainer(
+            name=f"Bulk Import {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            type="chat_rooms",
+            project_id=project_id
+        )
+        db.add(container)
+        db.commit()
+        db.refresh(container)
+
+    # Initialize import operations
+    import_ids = []
+    
+    for file in files:
+        import_id = str(uuid.uuid4())
+        import_ids.append(import_id)
+        
+        # Initialize in-memory progress tracking
+        import_progress[import_id] = {
+            "id": import_id,
+            "status": "pending",
+            "filename": file.filename,
+            "total_rows": 0,
+            "processed_rows": 0,
+            "errors": [],
+            "start_time": datetime.now().isoformat(),
+            "end_time": None,
+            "container_id": container.id,
+            "metadata_columns": metadata_mappings.get(file.filename, {})
+        }
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file.flush()
+            
+            # Start background processing
+            background_tasks.add_task(
+                process_import_file,
+                temp_file.name,
+                import_id,
+                project_id,
+                container.id,
+                metadata_mappings.get(file.filename, {}),
+                db
+            )
+    
+    return BulkImportResponse(
+        message="Bulk import started",
+        import_ids=import_ids,
+        container_id=container.id
+    )
+
+async def process_import_file(
+    file_path: str,
+    import_id: str,
+    project_id: int,
+    container_id: int,
+    metadata_columns: Dict[str, str],
+    db: Session
+):
+    """
+    Process a single file import in the background.
+    """
+    try:
+        # Read CSV file
+        df = pd.read_csv(file_path)
+        total_rows = len(df)
+        
+        # Update progress tracking
+        import_progress[import_id]["total_rows"] = total_rows
+        import_progress[import_id]["status"] = "processing"
+        
+        # Process in batches
+        batch_size = 1000
+        for i in range(0, total_rows, batch_size):
+            batch = df.iloc[i:i + batch_size]
+            
+            try:
+                # Create items from batch
+                items_to_add = []
+                for _, row in batch.iterrows():
+                    item = DataItem(
+                        container_id=container_id,
+                        content=str(row[metadata_columns['turn_text']]),
+                        item_type="chat_turn",
+                        item_metadata={
+                            'turn_id': str(row[metadata_columns['turn_id']]),
+                            'user_id': str(row[metadata_columns['user_id']]),
+                            'reply_to_turn': str(row[metadata_columns['reply_to_turn']]) if row[metadata_columns['reply_to_turn']] else None,
+                            'thread': str(row[metadata_columns['thread']]) if 'thread' in metadata_columns and metadata_columns['thread'] else None
+                        }
+                    )
+                    items_to_add.append(item)
+                
+                # Bulk insert
+                db.bulk_save_objects(items_to_add)
+                db.commit()
+                
+                # Update progress
+                import_progress[import_id]["processed_rows"] = min(i + batch_size, total_rows)
+                
+                # Small delay to prevent database overload
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                import_progress[import_id]["errors"].append(f"Error in batch {i//batch_size}: {str(e)}")
+        
+        # Mark as completed
+        import_progress[import_id]["status"] = "completed"
+        import_progress[import_id]["end_time"] = datetime.now().isoformat()
+        
+    except Exception as e:
+        # Update status on error
+        import_progress[import_id]["status"] = "failed"
+        import_progress[import_id]["errors"].append(str(e))
+        import_progress[import_id]["end_time"] = datetime.now().isoformat()
+    
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(file_path)
+        except:
+            pass
+
+@router.get("/imports/{import_id}/progress", response_model=ImportProgress)
+async def get_import_progress(
+    import_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get the progress of an import operation.
+    """
+    if import_id not in import_progress:
+        raise HTTPException(status_code=404, detail="Import operation not found")
+    
+    progress = import_progress[import_id]
+    
+    # Convert datetime strings back to datetime objects
+    start_time = datetime.fromisoformat(progress["start_time"])
+    end_time = datetime.fromisoformat(progress["end_time"]) if progress["end_time"] else None
+    
+    return ImportProgress(
+        id=progress["id"],
+        status=progress["status"],
+        filename=progress["filename"],
+        total_rows=progress["total_rows"],
+        processed_rows=progress["processed_rows"],
+        errors=progress["errors"],
+        start_time=start_time,
+        end_time=end_time,
+        container_id=progress["container_id"]
+    )
+
+@router.post("/imports/{import_id}/cancel")
+async def cancel_import(
+    import_id: str,
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Cancel an ongoing import operation.
+    """
+    if import_id not in import_progress:
+        raise HTTPException(status_code=404, detail="Import operation not found")
+    
+    progress = import_progress[import_id]
+    
+    if progress["status"] in ["completed", "failed"]:
+        raise HTTPException(status_code=400, detail="Cannot cancel completed or failed import")
+    
+    progress["status"] = "cancelled"
+    progress["end_time"] = datetime.now().isoformat()
+    
+    return {"message": "Import cancelled"}
+
+@router.post("/imports/{import_id}/retry")
+async def retry_import(
+    import_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retry a failed import operation.
+    """
+    if import_id not in import_progress:
+        raise HTTPException(status_code=404, detail="Import operation not found")
+    
+    progress = import_progress[import_id]
+    
+    if progress["status"] != "failed":
+        raise HTTPException(status_code=400, detail="Can only retry failed imports")
+    
+    # Reset import status
+    progress["status"] = "pending"
+    progress["processed_rows"] = 0
+    progress["errors"] = []
+    progress["start_time"] = datetime.now().isoformat()
+    progress["end_time"] = None
+    
+    # Start background processing
+    background_tasks.add_task(
+        process_import_file,
+        progress["filename"],
+        import_id,
+        progress["container_id"],
+        progress["metadata_columns"],
+        db
+    )
+    
+    return {"message": "Import retry started", "import_id": import_id}
 
 # Project-related endpoints
 @router.get("/projects", response_model=List[ProjectResponse])
@@ -72,233 +478,6 @@ async def list_chat_rooms(
         query = query.filter(DataContainer.type == container_type)
     
     return query.all()
-
-@router.post("/projects/{project_id}/rooms/import", status_code=status.HTTP_201_CREATED)
-@router.post("/projects/{project_id}/containers/import", status_code=status.HTTP_201_CREATED)
-async def import_chat_room(
-    project_id: int,
-    file: UploadFile = File(...),
-    name: Optional[str] = Form(None),
-    container_id: Optional[int] = Form(None),
-    metadata_columns: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """Import a chat room from a CSV file.
-    
-    The CSV should contain the following columns (or their mapped equivalents):
-    - turn_id: Unique identifier for each turn
-    - user_id: ID of the user who sent the message
-    - turn_text: The message content
-    - reply_to_turn: ID of the turn this message replies to
-    - thread: Optional thread identifier
-    
-    The metadata_columns parameter can be used to specify custom mappings from 
-    CSV column names to the standard field names.
-    """
-    try:
-        # Verify project access and type
-        project = db.query(Project).filter(
-            Project.id == project_id,
-            Project.type == "chat_disentanglement"
-        ).first()
-        if not project or current_user not in project.users:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        # Get or create container
-        if container_id:
-            container = db.query(DataContainer).filter(
-                DataContainer.id == container_id,
-                DataContainer.project_id == project_id
-            ).first()
-            if not container or container.project_id != project_id:
-                raise HTTPException(status_code=404, detail="Container not found")
-            db_container = container
-        else:
-            # Create new container
-            container_name = name or f"Chat Room from {file.filename}"
-            db_container = DataContainer(
-                name=container_name,
-                type="chat_rooms",  # Fixed container type for chat rooms
-                project_id=project.id,
-                created_by_id=current_user.id,
-                metadata={
-                    "room_id": str(db.query(DataContainer).count() + 1),
-                    "name": container_name,
-                    "source_file": file.filename
-                }
-            )
-            db.add(db_container)
-            db.flush()
-
-        # Read CSV content
-        content = await file.read()
-        df = pd.read_csv(StringIO(content.decode()))
-        
-        # Check if we have already mapped columns (from UI) or need to auto-detect
-        column_mapping = {}
-        use_direct_columns = False
-        thread_column = "thread"
-        
-        if set(["turn_id", "user_id", "turn_text", "reply_to_turn"]).issubset(df.columns):
-            # This is already a mapped CSV (from Streamlit UI)
-            use_direct_columns = True
-            required_fields = ["turn_id", "user_id", "turn_text", "reply_to_turn"]
-            if "thread" in df.columns:
-                thread_column = "thread"
-        else:
-            # Parse metadata columns if provided
-            if metadata_columns:
-                try:
-                    # Parse the JSON metadata columns
-                    parsed_mapping = json.loads(metadata_columns)
-                    
-                    # Check if it's a simple mapping or complex structure
-                    if isinstance(parsed_mapping, dict):
-                        # Extract column mappings
-                        for field, col_name in parsed_mapping.items():
-                            if field != "thread_id" and field in ["turn_id", "user_id", "turn_text", "reply_to_turn"]:
-                                column_mapping[field] = col_name
-                            elif field == "thread_id" or field == "thread":
-                                thread_column = col_name
-                except json.JSONDecodeError:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid metadata_columns format. Expected JSON object."
-                    )
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Error processing metadata_columns: {str(e)}"
-                    )
-            
-            # If no column mapping was provided or it's incomplete, try auto-detection
-            required_fields = ["turn_id", "user_id", "turn_text", "reply_to_turn"]
-            
-            # Use auto-detection for any missing fields
-            for field in required_fields:
-                if field not in column_mapping:
-                    # Try exact match first
-                    if field in df.columns:
-                        column_mapping[field] = field
-                    else:
-                        # Try common variations based on field
-                        variations = []
-                        if field == "turn_id":
-                            variations = ["turn id", "turnid", "turn", "message_id", "msg_id", "id"]
-                        elif field == "user_id":
-                            variations = ["user id", "userid", "user", "speaker", "speaker_id", "author"]
-                        elif field == "turn_text":
-                            variations = ["text", "content", "message", "turn_content", "msg_text", "message_text"]
-                        elif field == "reply_to_turn":
-                            variations = ["reply_to", "replyto", "in_reply_to", "parent_id", "reply"]
-                        
-                        # Check for variations
-                        for col in df.columns:
-                            if col.lower() in [v.lower() for v in variations]:
-                                column_mapping[field] = col
-                                break
-            
-            # Verify all required fields are mapped
-            missing_fields = [field for field in required_fields if field not in column_mapping]
-            if missing_fields:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Missing required column mappings: {', '.join(missing_fields)}. Available columns: {', '.join(df.columns)}"
-                )
-            
-            # Try to find thread column if not specified
-            if not thread_column:
-                for col in df.columns:
-                    if "thread" in col.lower():
-                        thread_column = col
-                        break
-        
-        # Process rows
-        for idx, row in df.iterrows():
-            # Create data item with appropriate mapping method
-            if use_direct_columns:
-                # If columns are already mapped in the CSV (from UI)
-                item_metadata = {
-                    'turn_id': str(row['turn_id']),
-                    'user_id': str(row['user_id']),
-                    'reply_to': str(row['reply_to_turn']) if pd.notna(row['reply_to_turn']) else None
-                }
-                
-                # Add thread_id to metadata if present in CSV
-                if thread_column in df.columns and pd.notna(row[thread_column]):
-                    item_metadata['thread_id'] = str(row[thread_column])
-                
-                content = str(row['turn_text'])
-            else:
-                # If using source column mapping
-                item_metadata = {
-                    'turn_id': str(row[column_mapping['turn_id']]),
-                    'user_id': str(row[column_mapping['user_id']]),
-                    'reply_to': str(row[column_mapping['reply_to_turn']]) if pd.notna(row[column_mapping['reply_to_turn']]) else None
-                }
-                
-                # Add thread_id to metadata if present in CSV
-                if thread_column and thread_column in df.columns and pd.notna(row[thread_column]):
-                    item_metadata['thread_id'] = str(row[thread_column])
-                
-                content = str(row[column_mapping['turn_text']])
-            
-            item = DataItem(
-                container_id=db_container.id,
-                content=content,
-                item_metadata=item_metadata,
-                sequence=idx
-            )
-            db.add(item)
-            db.flush()  # Get item ID without committing
-
-            # Create thread annotation if thread column exists
-            if thread_column and thread_column in df.columns and pd.notna(row[thread_column]):
-                annotation = Annotation(
-                    item_id=item.id,
-                    created_by_id=current_user.id,
-                    type="thread",
-                    data={
-                        "thread_id": str(row[thread_column]),
-                        "source": "imported",
-                        "import_timestamp": str(pd.Timestamp.now()),
-                        "original_column": thread_column
-                    }
-                )
-                db.add(annotation)
-
-        # Commit all changes
-        db.commit()
-        
-        # Prepare detailed response
-        response_data = {
-            "message": "Chat room imported successfully",
-            "container_id": db_container.id,
-            "items_imported": len(df),
-            "column_mapping": column_mapping if not use_direct_columns else "direct",
-            "direct_columns_used": use_direct_columns,
-            "mapped_columns": {
-                "turn_id": column_mapping.get("turn_id") if not use_direct_columns else "turn_id",
-                "user_id": column_mapping.get("user_id") if not use_direct_columns else "user_id",
-                "turn_text": column_mapping.get("turn_text") if not use_direct_columns else "turn_text",
-                "reply_to_turn": column_mapping.get("reply_to_turn") if not use_direct_columns else "reply_to_turn",
-                "thread": thread_column
-            },
-            "available_columns": list(df.columns)
-        }
-        
-        return response_data
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error importing data: {str(e)}"
-        )
 
 @router.get("/rooms/{room_id}/turns", response_model=List[ChatTurn])
 async def list_chat_turns(

@@ -327,13 +327,33 @@ class AnnoBackendAdmin:
             project_id: Project ID
             user_id: User ID
         """
-        response = requests.post(
-            f"{self.base_url}/admin-api/projects/{project_id}/users/{user_id}",
-            headers=self.headers
-        )
+        url = f"{self.base_url}/admin-api/projects/{project_id}/users/{user_id}"
         
-        result = self._handle_response(response)
-        print(result.get("message", f"User {user_id} added to project {project_id}"))
+        try:
+            response = requests.post(url, headers=self.headers)
+            response.raise_for_status()
+            result = response.json()
+            print(result.get("message", f"User {user_id} added to project {project_id}"))
+            return result
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/projects/{project_id}/users/{user_id}"
+                    response = requests.post(alt_url, headers=self.headers)
+                    response.raise_for_status()
+                    result = response.json()
+                    print(result.get("message", f"User {user_id} added to project {project_id}"))
+                    return result
+                else:
+                    error_msg = str(e)
+                    try:
+                        error_data = e.response.json()
+                        error_msg = error_data.get('detail', str(e))
+                    except:
+                        pass
+                    raise Exception(f"Error adding user to project: {error_msg}")
+            raise Exception(f"Error adding user to project: {str(e)}")
     
     def remove_user_from_project(self, project_id: int, user_id: int):
         """
@@ -477,163 +497,165 @@ class AnnoBackendAdmin:
         
         return container
     
-    def import_chat_room(
-        self,
-        project_id: int,
-        csv_file: str,
-        name: Optional[str] = None,
-        container_id: Optional[int] = None,
-        metadata_columns: Optional[Dict[str, str]] = None
-    ):
+    def import_chat_room(self, project_id: int, file: str, name: str = None, container_id: int = None, metadata_columns: str = None) -> Dict:
         """
         Import a chat room from a CSV file.
         
         Args:
-            project_id: Project ID
-            csv_file: Path to the CSV file
-            name: Name for the chat room (optional)
-            container_id: ID of existing container to import into (optional)
-            metadata_columns: Mapping of metadata column types to CSV column names
+            project_id: ID of the project
+            file: Path to the CSV file
+            name: Optional name for the chat room
+            container_id: Optional container ID to import into
+            metadata_columns: JSON string of column mappings
+        
+        Returns:
+            Dict containing import operation details
         """
-        # First verify the project exists and is of the correct type
-        try:
-            project = self.get_project(project_id)
-            if not project:
-                print(f"Error: Project {project_id} not found")
-                sys.exit(1)
-            if project.get('type') != 'chat_disentanglement':
-                print(f"Error: Project {project_id} is not a chat disentanglement project")
-                sys.exit(1)
-        except Exception as e:
-            print(f"Error verifying project: {e}")
-            sys.exit(1)
-
-        if not os.path.exists(csv_file):
-            print(f"Error: File {csv_file} does not exist")
-            sys.exit(1)
+        url = f"{self.base_url}/projects/{project_id}/rooms/import"
         
-        # Read and validate CSV before upload
-        try:
-            df = pd.read_csv(csv_file)
-            
-            # Check if this is a pre-mapped CSV (from Streamlit UI)
-            required_columns = ['turn_id', 'user_id', 'turn_text', 'reply_to_turn']
-            using_premapped_csv = set(required_columns).issubset(df.columns)
-            
-            if using_premapped_csv:
-                print(f"Detected pre-mapped CSV with {len(df)} rows")
-                print(f"Columns detected: {', '.join(df.columns)}")
-            else:
-                # Define standard column mappings for auto-detection
-                standard_columns = {
-                    'turn_id': ['turn_id', 'turn id', 'turnid', 'turn', 'message_id', 'msg_id', 'id'],
-                    'user_id': ['user_id', 'user id', 'userid', 'user', 'speaker', 'speaker_id', 'author'],
-                    'turn_text': ['turn_text', 'text', 'content', 'message', 'turn_content', 'msg_text', 'message_text'],
-                    'reply_to_turn': ['reply_to_turn', 'reply_to', 'replyto', 'in_reply_to', 'parent_id', 'reply']
-                }
-                
-                # Auto-detect columns if metadata_columns is not provided
-                if not metadata_columns:
-                    metadata_columns = {}
-                    
-                    # First try exact matches
-                    for target_col, variations in standard_columns.items():
-                        for col in df.columns:
-                            if col.lower() in [v.lower() for v in variations]:
-                                metadata_columns[target_col] = col
-                                break
-                
-                # Check if all required columns are present
-                missing_columns = [col for col in required_columns if col not in metadata_columns]
-                
-                if missing_columns:
-                    print(f"Error: Missing required column mappings: {', '.join(missing_columns)}")
-                    print(f"Available columns: {', '.join(df.columns)}")
-                    print(f"Current mappings: {metadata_columns}")
-                    sys.exit(1)
-                
-                print(f"CSV validated with {len(df)} rows. Column mappings:")
-                for target, source in metadata_columns.items():
-                    print(f"  {target} -> {source}")
-        except Exception as e:
-            print(f"Error validating CSV file: {e}")
-            sys.exit(1)
+        files = {'file': open(file, 'rb')}
+        data = {}
         
-        # Debug information
-        print(f"\nImporting chat room:")
-        print(f"Project ID: {project_id}")
-        print(f"CSV File: {csv_file}")
-        print(f"Name: {name}")
-        print(f"Container ID: {container_id}")
-        if not using_premapped_csv:
-            print(f"Column Mappings: {metadata_columns}")
-        else:
-            print("Using pre-mapped CSV columns directly")
-        
-        # Upload the file
-        files = {
-            "file": (os.path.basename(csv_file), open(csv_file, "rb"), "text/csv")
-        }
-        
-        # Prepare form data
-        data = {
-            "project_id": str(project_id)  # Convert to string for multipart/form-data
-        }
         if name:
-            data["name"] = name
+            data['name'] = name
         if container_id:
-            data["container_id"] = str(container_id)  # Convert to string for multipart/form-data
-        if metadata_columns and not using_premapped_csv:
-            data["metadata_columns"] = json.dumps(metadata_columns)
-        
-        # Debug request data
-        print("Request data:")
-        print(f"Files: {files}")
-        print(f"Form data: {data}")
-        
-        # Make the request
+            data['container_id'] = container_id
+        if metadata_columns:
+            data['metadata_columns'] = metadata_columns
+            
         try:
-            # Use the primary endpoint only
-            response = requests.post(
-                f"{self.base_url}/chat-disentanglement/projects/{project_id}/rooms/import",
-                files=files,
-                data=data,
-                headers=self.headers
-            )
-            
-            # Debug response
-            print(f"Response status code: {response.status_code}")
-            print(f"Response headers: {response.headers}")
-            print(f"Response text: {response.text}")  # Add this line for more debugging
-            
-            if response.status_code != 201:
-                print(f"Error response: {response.text}")
-                if response.status_code == 400:
-                    try:
-                        error_data = response.json()
-                        print(f"API Error: {error_data.get('detail', 'Unknown error')}")
-                    except:
-                        print(f"Bad request: {response.text}")
-                elif response.status_code == 404:
-                    print("Resource not found - Check that the project ID exists and you have access to it.")
+            response = requests.post(url, files=files, data=data, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/projects/{project_id}/rooms/import"
+                    response = requests.post(alt_url, files=files, data=data, headers=self.headers)
+                    response.raise_for_status()
+                    return response.json()
                 else:
-                    print(f"Server error: HTTP {response.status_code}")
-                sys.exit(1)
+                    raise Exception(f"Error during import: {e.response.text}")
+            raise Exception(f"Error during import: {str(e)}")
+
+    def bulk_import_chat_rooms(self, project_id: int, files: List[tuple], container_id: int = None, metadata_columns: str = None) -> Dict:
+        """
+        Import multiple chat rooms from CSV files.
+        
+        Args:
+            project_id: ID of the project
+            files: List of tuples containing file data (field_name, file_object)
+            container_id: Optional container ID to import into
+            metadata_columns: JSON string of column mappings for each file
+        
+        Returns:
+            Dict containing bulk import operation details
+        """
+        url = f"{self.base_url}/projects/{project_id}/rooms/bulk-import"
+        
+        data = {}
+        if container_id:
+            data['container_id'] = container_id
+        if metadata_columns:
+            data['metadata_columns'] = metadata_columns
             
-            result = self._handle_response(response)
-            print(f"Import successful! Container ID: {result.get('container_id')}")
-            if result.get('direct_columns_used'):
-                print("Used direct column mapping from pre-mapped CSV")
-            elif 'column_mapping' in result and isinstance(result['column_mapping'], dict):
-                print("Used column mappings:")
-                for target, source in result['column_mapping'].items():
-                    print(f"  {target} -> {source}")
-            print(f"Imported {result.get('items_imported', 0)} items")
-            
-            return result
-        except Exception as e:
-            print(f"Error during import: {e}")
-            sys.exit(1)
+        try:
+            response = requests.post(url, files=files, data=data, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/projects/{project_id}/rooms/bulk-import"
+                    response = requests.post(alt_url, files=files, data=data, headers=self.headers)
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    raise Exception(f"Error during bulk import: {e.response.text}")
+            raise Exception(f"Error during bulk import: {str(e)}")
+
+    def get_import_progress(self, import_id: str) -> Dict:
+        """
+        Get the progress of an import operation.
+        
+        Args:
+            import_id: ID of the import operation
+        
+        Returns:
+            Dict containing progress information
+        """
+        url = f"{self.base_url}/imports/{import_id}/progress"
+        try:
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/imports/{import_id}/progress"
+                    response = requests.get(alt_url, headers=self.headers)
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    raise Exception(f"Error getting import progress: {e.response.text}")
+            raise Exception(f"Error getting import progress: {str(e)}")
+
+    def cancel_import(self, import_id: str) -> Dict:
+        """
+        Cancel an ongoing import operation.
+        
+        Args:
+            import_id: ID of the import operation
+        
+        Returns:
+            Dict containing operation status
+        """
+        url = f"{self.base_url}/imports/{import_id}/cancel"
+        try:
+            response = requests.post(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/imports/{import_id}/cancel"
+                    response = requests.post(alt_url, headers=self.headers)
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    raise Exception(f"Error cancelling import: {e.response.text}")
+            raise Exception(f"Error cancelling import: {str(e)}")
+
+    def retry_import(self, import_id: str) -> Dict:
+        """
+        Retry a failed import operation.
+        
+        Args:
+            import_id: ID of the import operation
+        
+        Returns:
+            Dict containing new operation details
+        """
+        url = f"{self.base_url}/imports/{import_id}/retry"
+        try:
+            response = requests.post(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if e.response is not None:
+                if e.response.status_code == 404:
+                    # Try alternative URL format
+                    alt_url = f"{self.base_url}/chat-disentanglement/imports/{import_id}/retry"
+                    response = requests.post(alt_url, headers=self.headers)
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    raise Exception(f"Error retrying import: {e.response.text}")
+            raise Exception(f"Error retrying import: {str(e)}")
 
 
 def main():
