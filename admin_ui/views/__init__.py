@@ -1,1 +1,3 @@
-# Admin UI Views module 
+"""
+Package initialization for admin UI views.
+""" 

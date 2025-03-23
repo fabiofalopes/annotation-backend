@@ -1,13 +1,11 @@
 #!/bin/bash
-set -e
 
 # Wait for the API to be ready
 echo "Waiting for API to be ready..."
-until curl -f http://annotation_api:8000/docs > /dev/null 2>&1; do
-    echo "API is unavailable - sleeping"
-    sleep 2
+while ! curl -s http://annotation_api:8000/health > /dev/null; do
+    sleep 1
 done
-echo "API is up - starting admin UI"
+echo "API is ready!"
 
-# Run the command specified in CMD (streamlit)
-exec "$@" 
+# Start the Streamlit app
+exec streamlit run admin_ui/main.py --server.address 0.0.0.0 --server.port 8501 

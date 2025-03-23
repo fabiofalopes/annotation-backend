@@ -24,16 +24,28 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual Environment
 venv/
 ENV/
+.env
+.venv
+env/
+env.bak/
+venv.bak/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*.swn
+*.bak
+*.tmp
+*.temp
 
 # Project specific
 *.db
@@ -41,4 +53,13 @@ ENV/
 app.back/
 tests/
 docs/
-README.md 
+README.md
+*.log
+logs/
+data/
+uploads/
+temp_upload.csv
+admin_ui_backup/
+temp/
+tmp/
+.DS_Store 

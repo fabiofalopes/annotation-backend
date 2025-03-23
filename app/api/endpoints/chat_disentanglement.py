@@ -76,12 +76,12 @@ async def import_chat_room_internal(
             item = DataItem(
                 container_id=container.id,
                 content=turn_text,
-                item_type="chat_turn",
                 item_metadata={
                     'turn_id': turn_id,
                     'user_id': user_id,
                     'reply_to_turn': str(reply_to) if pd.notna(reply_to) else None,
-                    'thread': str(thread) if pd.notna(thread) else None
+                    'thread': str(thread) if pd.notna(thread) else None,
+                    'type': 'chat_turn'  # Store type in metadata instead
                 }
             )
             items_to_add.append(item)
@@ -109,13 +109,17 @@ async def process_import_in_background(
 ):
     """Process import in background"""
     try:
+        # Initialize progress tracking with all required fields
         import_progress[import_id] = ImportProgress(
             id=import_id,
             status="processing",
+            filename=os.path.basename(file_path),
             total_rows=0,
             processed_rows=0,
             errors=[],
-            start_time=datetime.now()
+            start_time=datetime.now(),
+            end_time=datetime.now(),  # Required field, will be updated later
+            container_id=container_id or 0  # Required field, will be updated when container is created
         )
 
         # Get total rows first
@@ -135,14 +139,17 @@ async def process_import_in_background(
             progress_callback=lambda processed: update_import_progress(import_id, processed)
         )
 
-        import_progress[import_id].status = "completed"
+        # Update progress with container ID and completion status
         import_progress[import_id].container_id = container.id
+        import_progress[import_id].status = "completed"
         import_progress[import_id].end_time = datetime.now()
 
     except Exception as e:
-        import_progress[import_id].status = "failed"
-        import_progress[import_id].errors.append(str(e))
-        import_progress[import_id].end_time = datetime.now()
+        # Update progress with error status
+        if import_id in import_progress:
+            import_progress[import_id].status = "failed"
+            import_progress[import_id].errors.append(str(e))
+            import_progress[import_id].end_time = datetime.now()
         raise
 
     finally:
@@ -200,6 +207,25 @@ async def import_chat_room(
 
         # Generate import ID
         import_id = f"import_{datetime.now().timestamp()}_{file.filename}"
+        
+        # Create container if needed
+        container = None
+        if container_id:
+            container = db.query(DataContainer).filter(
+                DataContainer.id == container_id,
+                DataContainer.project_id == project_id
+            ).first()
+            if not container:
+                raise HTTPException(status_code=404, detail="Container not found")
+        else:
+            container = DataContainer(
+                name=name or f"Import {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                type="chat_rooms",
+                project_id=project_id
+            )
+            db.add(container)
+            db.commit()
+            db.refresh(container)
 
         # Start background task
         background_tasks.add_task(
@@ -207,7 +233,7 @@ async def import_chat_room(
             import_id=import_id,
             project_id=project_id,
             file_path=file_path,
-            container_id=container_id,
+            container_id=container.id,
             name=name,
             metadata_columns=json.loads(metadata_columns) if metadata_columns else None,
             batch_size=batch_size,
@@ -215,10 +241,17 @@ async def import_chat_room(
             current_user=current_user
         )
 
+        # Return proper ImportStatus
         return ImportStatus(
-            import_id=import_id,
+            id=import_id,
             status="pending",
-            message="Import started"
+            filename=file.filename,
+            total_rows=0,  # Will be updated by background task
+            processed_rows=0,
+            errors=[],
+            start_time=datetime.now(),
+            container_id=container.id,
+            metadata_columns=json.loads(metadata_columns) if metadata_columns else None
         )
 
     except Exception as e:
@@ -366,12 +399,12 @@ async def process_import_file(
                     item = DataItem(
                         container_id=container_id,
                         content=str(row[metadata_columns['turn_text']]),
-                        item_type="chat_turn",
                         item_metadata={
                             'turn_id': str(row[metadata_columns['turn_id']]),
                             'user_id': str(row[metadata_columns['user_id']]),
                             'reply_to_turn': str(row[metadata_columns['reply_to_turn']]) if row[metadata_columns['reply_to_turn']] else None,
-                            'thread': str(row[metadata_columns['thread']]) if 'thread' in metadata_columns and metadata_columns['thread'] else None
+                            'thread': str(row[metadata_columns['thread']]) if 'thread' in metadata_columns and metadata_columns['thread'] else None,
+                            'type': 'chat_turn'  # Store type in metadata instead
                         }
                     )
                     items_to_add.append(item)

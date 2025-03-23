@@ -1,337 +1,375 @@
+"""
+Import Data view module for the Admin UI.
+"""
 import streamlit as st
+from typing import Dict, List, Optional, Any
 import pandas as pd
+import tempfile
 import os
 import json
-import requests
 import time
-from admin_ui.utils.ui_components import notification
-from typing import Dict, List, Optional
-import tempfile
-from pathlib import Path
 
-# Get admin instance
-admin = st.session_state.admin
+from admin_ui.utils.ui_components import (
+    notification,
+    loading_spinner
+)
+from admin_ui.utils.schema_manager import SchemaManager
 
-# Page title
-st.title("Data Import")
+def suggest_column_mapping(df: pd.DataFrame, project_type: str) -> Dict[str, str]:
+    """Suggest column mappings based on common field names.
+    
+    Args:
+        df: The DataFrame containing the data
+        project_type: The type of project
+        
+    Returns:
+        Dict mapping our field names to CSV column names
+    """
+    # Get schema information
+    schema = SchemaManager.get_schema_for_type(project_type)
+    field_info = SchemaManager.get_field_info(schema)
+    
+    # Use SchemaManager to suggest mappings
+    return SchemaManager.suggest_mapping(list(df.columns), field_info)
 
-# Project selection
-if "projects" not in st.session_state:
+def validate_file_upload(
+    uploaded_file,
+    project_type: str,
+    column_mapping: Dict[str, str]
+) -> Optional[pd.DataFrame]:
+    """Validate the uploaded file and return its contents as a DataFrame.
+    
+    Args:
+        uploaded_file: The uploaded file from st.file_uploader
+        project_type: The type of project
+        column_mapping: Mapping from our field names to CSV column names
+        
+    Returns:
+        Optional[pd.DataFrame]: The validated DataFrame or None if validation fails
+    """
+    if not uploaded_file:
+        return None
+        
     try:
-        st.session_state.projects = admin.list_projects()
+        # Determine file type from extension
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        
+        if file_extension == 'csv':
+            df = pd.read_csv(uploaded_file)
+        elif file_extension == 'jsonl':
+            df = pd.read_json(uploaded_file, lines=True)
+        else:
+            notification("Unsupported file format. Please upload a CSV or JSONL file.", "error")
+            return None
+            
+        # For chat disentanglement, we have specific field requirements
+        if project_type == "chat_disentanglement":
+            required_fields = ["turn_id", "user_id", "turn_text"]
+            missing_required = [field for field in required_fields if field not in column_mapping]
+            if missing_required:
+                notification(
+                    f"Missing mappings for required fields: {', '.join(missing_required)}",
+                    "error"
+                )
+                return None
+        else:
+            # For other project types, use SchemaManager
+            schema = SchemaManager.get_schema_for_type(project_type)
+            field_info = SchemaManager.get_field_info(schema)
+            missing_required = SchemaManager.validate_mapping(column_mapping, field_info)
+            if missing_required:
+                notification(
+                    f"Missing mappings for required fields: {', '.join(missing_required)}",
+                    "error"
+                )
+                return None
+            
+        # Check that all mapped columns exist
+        missing_columns = [col for col in column_mapping.values() if col not in df.columns]
+        if missing_columns:
+            notification(
+                f"Mapped columns not found in file: {', '.join(missing_columns)}",
+                "error"
+            )
+            return None
+            
+        # Create a new DataFrame with mapped columns
+        mapped_df = pd.DataFrame()
+        for our_field, csv_field in column_mapping.items():
+            mapped_df[our_field] = df[csv_field]
+            
+        return mapped_df
+        
     except Exception as e:
-        st.error(f"Error loading projects: {e}")
-        st.session_state.projects = []
+        notification(f"Error reading file: {str(e)}", "error")
+        return None
 
-# Filter projects by type
-if st.session_state.projects:
-    project_types = list(set(p["type"] for p in st.session_state.projects))
-    selected_type = st.selectbox(
-        "Select Project Type",
-        project_types,
-        index=project_types.index("chat_disentanglement") if "chat_disentanglement" in project_types else 0
+def show_column_mapping_ui(df: pd.DataFrame, project_type: str) -> Dict[str, str]:
+    """Show the column mapping interface.
+    
+    Args:
+        df: The DataFrame containing the data
+        project_type: The type of project
+        
+    Returns:
+        Dict mapping our field names to CSV column names
+    """
+    st.write("### Column Mapping")
+    st.write(
+        "Map the columns from your file to the required fields. "
+        "We've attempted to automatically map common column names."
     )
     
-    projects = [
-        (p["id"], f"{p['name']} (ID: {p['id']})") 
-        for p in st.session_state.projects 
-        if p["type"] == selected_type
-    ]
-    
-    if not projects:
-        st.warning(f"No {selected_type} projects found. Please create one first.")
+    # For chat disentanglement, we have specific field requirements
+    if project_type == "chat_disentanglement":
+        field_info = {
+            "turn_id": {
+                "name": "Turn ID",
+                "required": True,
+                "description": "Unique identifier for each turn"
+            },
+            "user_id": {
+                "name": "User ID",
+                "required": True,
+                "description": "ID of the user who sent the message"
+            },
+            "turn_text": {
+                "name": "Message Content",
+                "required": True,
+                "description": "The message content"
+            },
+            "reply_to_turn": {
+                "name": "Reply To",
+                "required": False,
+                "description": "ID of the turn this message replies to"
+            },
+            "thread": {
+                "name": "Thread",
+                "required": False,
+                "description": "Optional thread identifier"
+            }
+        }
     else:
-        project_id = st.selectbox(
+        # For other project types, use SchemaManager
+        schema = SchemaManager.get_schema_for_type(project_type)
+        field_info = SchemaManager.get_field_info(schema)
+    
+    # Get suggested mapping
+    suggested_mapping = SchemaManager.suggest_mapping(list(df.columns), field_info)
+    
+    # Show mapping interface
+    mapping = {}
+    for field_name, info in field_info.items():
+        col1, col2 = st.columns([2, 3])
+        with col1:
+            st.write(f"**{info['name'] if isinstance(info, dict) else info.name}**")
+            if info.get('required', False) if isinstance(info, dict) else info.required:
+                st.write("(Required)")
+            st.write(f"_{info['description'] if isinstance(info, dict) else info.description}_")
+        with col2:
+            mapping[field_name] = st.selectbox(
+                f"Map to column for {field_name}",
+                options=[""] + list(df.columns),
+                index=0 if field_name not in suggested_mapping else list(df.columns).index(suggested_mapping[field_name]) + 1,
+                key=f"map_{field_name}"
+            )
+            
+    # Remove empty mappings
+    return {k: v for k, v in mapping.items() if v}
+
+def show_import_data_view() -> None:
+    """Render the import data view."""
+    st.title("📥 Import Data")
+    
+    try:
+        # Get list of projects
+        projects = st.session_state.admin.list_projects()
+        if not projects:
+            st.warning("No projects found. Please create a project first.")
+            return
+            
+        # Project selection
+        project_options = {
+            p["id"]: f"{p['name']} ({p['type']})"
+            for p in projects
+        }
+        
+        selected_project_id = st.selectbox(
             "Select Project",
-            [p[0] for p in projects],
-            format_func=lambda x: next(p[1] for p in projects if p[0] == x)
+            options=list(project_options.keys()),
+            format_func=lambda x: project_options[x]
         )
         
-        # Container selection
-        try:
-            containers = admin.list_containers(project_id)
-            type_containers = [c for c in containers if c["type"] == "chat_rooms"]
-        except Exception as e:
-            st.error(f"Error loading containers: {e}")
-            type_containers = []
-        
-        container_options = ["Create New Container"] + [
-            f"{c['name']} (ID: {c['id']})" for c in type_containers
-        ]
-        
-        # Pre-select container if coming from container view
-        preselected_index = 0
-        if hasattr(st.session_state, 'pre_selected_container'):
-            for i, c in enumerate(type_containers):
-                if c['id'] == st.session_state.pre_selected_container:
-                    preselected_index = i + 1  # +1 because of "Create New" option
-                    break
-        
-        selected_container = st.selectbox(
-            "Select Container",
-            container_options,
-            index=preselected_index
+        # Get selected project details
+        selected_project = next(
+            (p for p in projects if p["id"] == selected_project_id),
+            None
         )
         
-        container_id = None
-        if selected_container != "Create New Container":
-            container_id = int(selected_container.split("ID: ")[1].rstrip(")"))
-        
-        if container_id is None:
-            room_name = st.text_input("Chat Room Name")
-
-        # Import type selection
-        import_type = st.radio(
-            "Import Type",
-            ["Single File", "Multiple Files", "Directory"],
-            help="Choose how you want to import data"
-        )
-
-        if import_type == "Single File":
-            uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-            files_to_process = [uploaded_file] if uploaded_file else []
-        
-        elif import_type == "Multiple Files":
-            uploaded_files = st.file_uploader("Choose CSV files", type="csv", accept_multiple_files=True)
-            files_to_process = uploaded_files
-        
-        else:  # Directory
-            uploaded_files = st.file_uploader("Choose CSV files from directory", type="csv", accept_multiple_files=True)
-            files_to_process = uploaded_files
-
-        # Initialize session state for file processing
-        if 'processed_files' not in st.session_state:
-            st.session_state.processed_files = {}
-        
-        if 'column_mappings' not in st.session_state:
-            st.session_state.column_mappings = {}
-
-        if 'import_operations' not in st.session_state:
-            st.session_state.import_operations = {}
-
-        # Process files
-        if files_to_process:
-            st.write("### Files to Process")
+        if selected_project:
+            st.write(
+                f"**Project Type:** {selected_project['type']}\n\n"
+                f"**Description:** {selected_project.get('description', 'No description')}"
+            )
             
-            # Required columns for chat rooms
-            required_columns = {
-                'turn_id': ['turn_id', 'turn id', 'turnid', 'turn', 'message_id', 'msg_id', 'id'],
-                'user_id': ['user_id', 'user id', 'userid', 'user', 'speaker', 'speaker_id', 'author'],
-                'turn_text': ['turn_text', 'text', 'content', 'message', 'turn_content', 'msg_text', 'message_text'],
-                'reply_to_turn': ['reply_to_turn', 'reply_to', 'replyto', 'in_reply_to', 'parent_id', 'reply']
-            }
+            # Container name input
+            container_name = st.text_input(
+                "Container Name",
+                help="Name for the new container that will hold the imported data"
+            )
             
-            # Optional columns
-            optional_columns = {
-                'thread': ['thread', 'thread_id', 'conversation', 'topic', 'thread_number', 'thread_idx']
-            }
-
-            # Process each file
-            for file_idx, file in enumerate(files_to_process):
-                st.write(f"#### File {file_idx + 1}: {file.name}")
+            # File upload section
+            st.write("### Upload Data")
+            st.write(
+                "Upload a CSV or JSONL file containing the data to import. "
+                "You'll be able to map the columns to the required fields after uploading."
+            )
                 
-                # Create three columns for file preview and mapping
-                col1, col2 = st.columns([1, 1])
-                
-                # Read the file
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=["csv", "jsonl"],
+                help="Upload a CSV or JSONL file"
+            )
+            
+            if uploaded_file:
+                # Read the file first to show preview and mapping
                 try:
-                    df = pd.read_csv(file)
-                    
-                    with col1:
-                        st.write("Preview:")
-                        st.dataframe(df.head())
-
-                    # Auto-detect columns
-                    detected_columns = {}
-                    
-                    # First try exact matches
-                    for target_col, variations in {**required_columns, **optional_columns}.items():
-                        exact_match = next((col for col in df.columns if col.lower() in [v.lower() for v in variations]), None)
-                        if exact_match:
-                            detected_columns[target_col] = exact_match
-                            continue
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:  # jsonl
+                        df = pd.read_json(uploaded_file, lines=True)
                         
-                        # Then try partial/fuzzy matches
-                        for col in df.columns:
-                            col_lower = col.lower()
-                            for variation in variations:
-                                variation_lower = variation.lower()
-                                if variation_lower in col_lower or col_lower in variation_lower:
-                                    if col not in detected_columns.values():
-                                        detected_columns[target_col] = col
-                                        break
-                            if target_col in detected_columns:
-                                break
-
-                    # Store detected mappings in session state
-                    if file.name not in st.session_state.column_mappings:
-                        st.session_state.column_mappings[file.name] = detected_columns
-
-                    with col2:
-                        st.write("Column Mapping:")
-                        mapping_col1, mapping_col2 = st.columns([1, 1])
-                        
-                        with mapping_col1:
-                            st.write("Required Fields")
-                            for field in required_columns.keys():
-                                st.session_state.column_mappings[file.name][field] = st.selectbox(
-                                    f"Map {field}",
-                                    [""] + list(df.columns),
-                                    index=list(df.columns).index(st.session_state.column_mappings[file.name].get(field, "")) + 1 if st.session_state.column_mappings[file.name].get(field, "") in df.columns else 0,
-                                    key=f"{file.name}_{field}"
-                                )
-
-                        with mapping_col2:
-                            st.write("Optional Fields")
-                            for field in optional_columns.keys():
-                                st.session_state.column_mappings[file.name][field] = st.selectbox(
-                                    f"Map {field}",
-                                    [""] + list(df.columns),
-                                    index=list(df.columns).index(st.session_state.column_mappings[file.name].get(field, "")) + 1 if st.session_state.column_mappings[file.name].get(field, "") in df.columns else 0,
-                                    key=f"{file.name}_{field}"
-                                )
-
-                    # Validate mappings
-                    missing_required = [
-                        field for field in required_columns.keys()
-                        if not st.session_state.column_mappings[file.name].get(field)
-                    ]
-
-                    if missing_required:
-                        st.error(f"Missing required mappings: {', '.join(missing_required)}")
-                    else:
-                        st.success("All required fields are mapped!")
-
-                    # Store processed dataframe
-                    if not missing_required:
-                        # Create mapped dataframe
-                        mapped_df = pd.DataFrame()
-                        for target_col, source_col in st.session_state.column_mappings[file.name].items():
-                            if source_col:
-                                mapped_df[target_col] = df[source_col].copy()
-                        
-                        # Store in session state
-                        st.session_state.processed_files[file.name] = {
-                            'df': mapped_df,
-                            'mappings': st.session_state.column_mappings[file.name]
-                        }
-
-                except Exception as e:
-                    st.error(f"Error processing file {file.name}: {str(e)}")
-                    continue
-
-                st.markdown("---")  # Add separator between files
-
-            # Import button
-            if st.session_state.processed_files and not any(missing_required):
-                if st.button("Import All Files"):
-                    progress_container = st.empty()
-                    status_text = st.empty()
+                    # Show data preview
+                    st.write("### Data Preview")
+                    st.dataframe(
+                        df.head(),
+                        use_container_width=True
+                    )
                     
-                    try:
-                        # Start bulk import
-                        if len(files_to_process) > 1:
-                            # Use bulk import endpoint
-                            with tempfile.TemporaryDirectory() as temp_dir:
-                                temp_files = []
-                                for filename, file_data in st.session_state.processed_files.items():
-                                    temp_path = os.path.join(temp_dir, filename)
-                                    file_data['df'].to_csv(temp_path, index=False)
-                                    temp_files.append(("files", open(temp_path, "rb")))
-
-                                # Make bulk import request
-                                response = admin.bulk_import_chat_rooms(
-                                    project_id=project_id,
-                                    files=temp_files,
-                                    container_id=container_id,
-                                    metadata_columns=json.dumps({
-                                        filename: data['mappings']
-                                        for filename, data in st.session_state.processed_files.items()
-                                    })
-                                )
-
-                                # Store import IDs
-                                for import_id in response.get('import_ids', []):
-                                    st.session_state.import_operations[import_id] = {
-                                        'status': 'pending',
-                                        'progress': 0
-                                    }
-
-                        else:
-                            # Use single file import
-                            filename = list(st.session_state.processed_files.keys())[0]
-                            file_data = st.session_state.processed_files[filename]
+                    # Show column mapping interface
+                    column_mapping = show_column_mapping_ui(df, selected_project["type"])
+                    
+                    if container_name and column_mapping:
+                        # Validate with mapping
+                        uploaded_file.seek(0)  # Reset file pointer
+                        mapped_df = validate_file_upload(
+                            uploaded_file,
+                            selected_project["type"],
+                            column_mapping
+                        )
+                        
+                        if mapped_df is not None:
+                            # Show mapped data preview
+                            st.write("### Mapped Data Preview")
+                            st.dataframe(
+                                mapped_df.head(),
+                                use_container_width=True
+                            )
                             
-                            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as temp_file:
-                                file_data['df'].to_csv(temp_file.name, index=False)
-                                
-                                # Import the file
-                                response = admin.import_chat_room(
-                                    project_id=project_id,
-                                    file=temp_file.name,
-                                    name=f"{room_name}_{filename}" if room_name else filename,
-                                    container_id=container_id,
-                                    metadata_columns=json.dumps(file_data['mappings'])
-                                )
-
-                                # Store import ID
-                                import_id = response.get('import_id')
-                                if import_id:
-                                    st.session_state.import_operations[import_id] = {
-                                        'status': 'pending',
-                                        'progress': 0
-                                    }
-
-                        # Monitor import progress
-                        while True:
-                            all_completed = True
-                            total_progress = 0
-                            active_imports = 0
-
-                            for import_id in st.session_state.import_operations:
+                            # Import button
+                            if st.button("Import Data"):
                                 try:
-                                    progress = admin.get_import_progress(import_id)
-                                    st.session_state.import_operations[import_id]['status'] = progress['status']
-                                    st.session_state.import_operations[import_id]['progress'] = progress['progress_percentage']
+                                    loading_spinner("Importing data...")
                                     
-                                    if progress['status'] not in ['completed', 'failed']:
-                                        all_completed = False
-                                        active_imports += 1
-                                    
-                                    total_progress += progress['progress_percentage']
-                                    
-                                    # Show individual progress
-                                    status_text.text(f"Processing {import_id}: {progress['status']} ({progress['progress_percentage']:.1f}%)")
-                                    
-                                    # Show errors if any
-                                    if progress['errors']:
-                                        st.error(f"Errors in {import_id}:")
-                                        for error in progress['errors']:
-                                            st.error(error)
-                                
+                                    # Save mapped data to a temporary file
+                                    with tempfile.NamedTemporaryFile(
+                                        mode='w',
+                                        suffix='.csv',
+                                        delete=False
+                                    ) as tmp_file:
+                                        mapped_df.to_csv(tmp_file.name, index=False)
+                                        
+                                        # Import the data based on project type
+                                        if selected_project["type"] == "chat_disentanglement":
+                                            # For chat data, use import_chat_room
+                                            result = st.session_state.admin.import_chat_room(
+                                                project_id=selected_project_id,
+                                                file=tmp_file.name,
+                                                name=container_name,
+                                                metadata_columns=json.dumps(column_mapping)
+                                            )
+                                            
+                                            # Show import progress
+                                            if result:
+                                                st.write("### Import Progress")
+                                                st.write(f"Import ID: {result['id']}")
+                                                st.write(f"Status: {result['status']}")
+                                                st.write(f"Container ID: {result['container_id']}")
+                                                st.write(f"Start Time: {result['start_time']}")
+                                                
+                                                # Create progress bar
+                                                progress_bar = st.progress(0)
+                                                status_text = st.empty()
+                                                error_text = st.empty()
+                                                
+                                                # Poll for progress updates
+                                                max_retries = 60  # 1 minute timeout
+                                                retry_count = 0
+                                                
+                                                while retry_count < max_retries:
+                                                    try:
+                                                        progress = st.session_state.admin.get_import_progress(result['id'])
+                                                        if progress:
+                                                            if progress['total_rows'] > 0:
+                                                                percentage = progress['processed_rows'] / progress['total_rows']
+                                                                progress_bar.progress(percentage)
+                                                                status_text.text(
+                                                                    f"Processed {progress['processed_rows']} of {progress['total_rows']} rows"
+                                                                )
+                                                            
+                                                            if progress['errors']:
+                                                                error_text.error(
+                                                                    f"Errors: {', '.join(progress['errors'])}"
+                                                                )
+                                                            
+                                                            if progress['status'] in ['completed', 'failed']:
+                                                                if progress['status'] == 'completed':
+                                                                    notification(
+                                                                        "Import completed successfully!",
+                                                                        "success"
+                                                                    )
+                                                                else:
+                                                                    notification(
+                                                                        f"Import failed: {', '.join(progress['errors'])}",
+                                                                        "error"
+                                                                    )
+                                                                break
+                                                            
+                                                            # Wait before next update
+                                                            time.sleep(1)
+                                                            retry_count += 1
+                                                        else:
+                                                            # If we can't get progress, wait a bit and retry
+                                                            time.sleep(1)
+                                                            retry_count += 1
+                                                    except Exception as e:
+                                                        error_text.error(f"Error checking progress: {str(e)}")
+                                                        time.sleep(1)
+                                                        retry_count += 1
+                                                
+                                                if retry_count >= max_retries:
+                                                    notification(
+                                                        "Import timed out. Please check the status in the Imports section.",
+                                                        "warning"
+                                                    )
+                                                    
+                                        else:
+                                            # For document data, we need to implement document import
+                                            # This should be implemented in the API first
+                                            notification(
+                                                "Document import not yet implemented. Please implement in the API first.",
+                                                "error"
+                                            )
+                                            return
+                                            
+                                    # Clean up temporary file
+                                    os.unlink(tmp_file.name)
+                                        
                                 except Exception as e:
-                                    st.error(f"Error checking progress for {import_id}: {str(e)}")
-                            
-                            # Update overall progress
-                            if st.session_state.import_operations:
-                                avg_progress = total_progress / len(st.session_state.import_operations)
-                                progress_container.progress(int(avg_progress))
-                            
-                            if all_completed:
-                                break
-                            
-                            time.sleep(1)  # Wait before next check
-
-                        # Show final status
-                        status_text.text("Import complete!")
-                        
-                        # Clear session state
-                        st.session_state.processed_files = {}
-                        st.session_state.column_mappings = {}
-                        st.session_state.import_operations = {}
-                        st.experimental_rerun()
-
-                    except Exception as e:
-                        st.error(f"Error during import: {str(e)}")
-else:
-    st.warning("No projects found. Please create a project first.") 
+                                    notification(f"Failed to import data: {str(e)}", "error")
+                                    
+                except Exception as e:
+                    notification(f"Error reading file: {str(e)}", "error")
+                    
+    except Exception as e:
+        notification(f"Error: {str(e)}", "error") 

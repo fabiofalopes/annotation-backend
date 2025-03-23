@@ -22,10 +22,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir streamlit pandas tabulate
 
 # Copy application code
+COPY app/ /app/app/
 COPY admin_ui/ /app/admin_ui/
 
-# Make entrypoint executable
-RUN chmod +x /app/admin_ui/docker_entrypoint.sh
+# Make entrypoint executable and ensure it has the correct line endings
+RUN chmod +x /app/admin_ui/docker_entrypoint.sh \
+    && sed -i 's/\r$//' /app/admin_ui/docker_entrypoint.sh
 
 # Set entrypoint
 ENTRYPOINT ["/app/admin_ui/docker_entrypoint.sh"]

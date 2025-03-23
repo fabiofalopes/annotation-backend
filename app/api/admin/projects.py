@@ -1,15 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
+import logging
 
 from app.database import get_db
 from app.models import User, Project
 from app.schemas import ProjectCreate, ProjectResponse, ProjectWithContainers
 from app.auth import get_current_active_user
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 def get_current_admin_user(current_user: User = Depends(get_current_active_user)) -> User:
     """Dependency to check if current user is an admin"""
     if current_user.role != "admin":
+        logger.warning(f"Non-admin user {current_user.username} attempted to access admin endpoint")
         raise HTTPException(
             status_code=403,
             detail="This endpoint requires admin privileges"
@@ -25,19 +30,32 @@ def create_project(
     current_user: User = Depends(get_current_admin_user)  # Admin only
 ):
     """Create a new project (admin only)"""
-    db_project = Project(
-        name=project.name,
-        description=project.description,
-        type=project.type,  # e.g., "chat_disentanglement"
-        created_by_id=current_user.id  # Set the creator
-    )
-    # Add the admin user to the project's users list
-    db_project.users.append(current_user)
+    logger.info(f"Creating project: {project.dict()}")
+    logger.info(f"Request by admin user: {current_user.username}")
     
-    db.add(db_project)
-    db.commit()
-    db.refresh(db_project)
-    return db_project
+    try:
+        db_project = Project(
+            name=project.name,
+            description=project.description,
+            type=project.type,  # e.g., "chat_disentanglement"
+            created_by_id=current_user.id  # Set the creator
+        )
+        # Add the admin user to the project's users list
+        db_project.users.append(current_user)
+        
+        db.add(db_project)
+        db.commit()
+        db.refresh(db_project)
+        
+        logger.info(f"Project created successfully: ID={db_project.id}")
+        return db_project
+        
+    except Exception as e:
+        logger.error(f"Error creating project: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating project: {str(e)}"
+        )
 
 @router.post("/{project_id}/users/{user_id}")
 def add_user_to_project(

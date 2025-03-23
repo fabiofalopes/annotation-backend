@@ -1,1 +1,3 @@
-# Admin UI Utils module 
+"""
+Package initialization for admin UI utilities.
+""" 

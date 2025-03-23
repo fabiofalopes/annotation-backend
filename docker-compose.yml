@@ -34,6 +34,7 @@ services:
     environment:
       - ANNO_API_URL=http://annotation_api:8000
       - PYTHONPATH=/app
+      - ENVIRONMENT=development
     depends_on:
       annotation_api:
         condition: service_healthy
