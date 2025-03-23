@@ -30,6 +30,72 @@ router = APIRouter(tags=["chat-disentanglement"])
 # Track import progress in memory
 import_progress: Dict[str, Dict] = {}
 
+async def import_chat_room_internal(
+    project_id: int,
+    file_path: str,
+    container_id: Optional[int],
+    name: Optional[str],
+    metadata_columns: Optional[Dict[str, str]],
+    batch_size: int,
+    db: Session,
+    current_user: User,
+    progress_callback: Optional[callable] = None
+) -> DataContainer:
+    """Internal function to handle chat room import logic"""
+    # Create or get container
+    container = None
+    if container_id:
+        container = db.query(DataContainer).filter(
+            DataContainer.id == container_id,
+            DataContainer.project_id == project_id
+        ).first()
+        if not container:
+            raise HTTPException(status_code=404, detail="Container not found")
+    else:
+        container = DataContainer(
+            name=name or f"Import {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            type="chat_rooms",
+            project_id=project_id
+        )
+        db.add(container)
+        db.commit()
+        db.refresh(container)
+
+    processed_rows = 0
+    # Process the file in chunks
+    for chunk in pd.read_csv(file_path, chunksize=batch_size):
+        items_to_add = []
+        for _, row in chunk.iterrows():
+            # Map columns according to metadata_columns or use default names
+            turn_id = str(row[metadata_columns.get('turn_id', 'turn_id')] if metadata_columns else row['turn_id'])
+            user_id = str(row[metadata_columns.get('user_id', 'user_id')] if metadata_columns else row['user_id'])
+            turn_text = str(row[metadata_columns.get('turn_text', 'turn_text')] if metadata_columns else row['turn_text'])
+            reply_to = row[metadata_columns.get('reply_to_turn', 'reply_to_turn')] if metadata_columns else row.get('reply_to_turn')
+            thread = row[metadata_columns.get('thread', 'thread')] if metadata_columns and 'thread' in metadata_columns else row.get('thread')
+
+            item = DataItem(
+                container_id=container.id,
+                content=turn_text,
+                item_type="chat_turn",
+                item_metadata={
+                    'turn_id': turn_id,
+                    'user_id': user_id,
+                    'reply_to_turn': str(reply_to) if pd.notna(reply_to) else None,
+                    'thread': str(thread) if pd.notna(thread) else None
+                }
+            )
+            items_to_add.append(item)
+
+        # Bulk insert items
+        db.bulk_save_objects(items_to_add)
+        db.commit()
+
+        processed_rows += len(chunk)
+        if progress_callback:
+            progress_callback(processed_rows)
+
+    return container
+
 async def process_import_in_background(
     import_id: str,
     project_id: int,
