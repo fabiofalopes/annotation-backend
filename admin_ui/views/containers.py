@@ -25,8 +25,8 @@ def format_container_data(containers: List[Dict]) -> List[Dict]:
         formatted_containers.append({
             "ID": container.get("id", "N/A"),
             "Name": container.get("name", "N/A"),
-            "Project": container.get("project_name", "N/A"),
-            "Status": container.get("status", "N/A"),
+            "Type": container.get("type", "N/A"),
+            "Project ID": container.get("project_id", "N/A"),
             "Created At": container.get("created_at", "N/A")
         })
     return formatted_containers
@@ -53,7 +53,7 @@ def show_containers_view() -> None:
             for container in containers:
                 cols = st.columns([3, 1])
                 with cols[0]:
-                    st.write(f"**{container['name']}** ({container['status']})")
+                    st.write(f"**{container['name']}** ({container['type']})")
                 with cols[1]:
                     confirm_dialog(
                         title=f"Delete {container['name']}",
