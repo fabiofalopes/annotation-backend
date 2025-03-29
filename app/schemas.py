@@ -200,9 +200,8 @@ class ImportStatus(BaseModel):
     processed_rows: int = 0
     errors: List[str] = []
     start_time: datetime
-    end_time: Optional[datetime] = None
-    container_id: int
-    metadata_columns: Optional[Dict[str, str]] = None
+    container_id: Optional[int] = None
+    metadata_columns: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -211,12 +210,16 @@ class ImportProgress(BaseModel):
     id: str
     status: str
     filename: str
-    total_rows: int
-    processed_rows: int
-    errors: List[str]
+    total_rows: int = 0
+    processed_rows: int = 0
+    errors: List[str] = []
     start_time: datetime
-    end_time: Optional[datetime]
-    container_id: int
+    end_time: Optional[datetime] = None
+    container_id: Optional[int] = None
+    metadata_columns: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True
 
     @property
     def progress_percentage(self) -> float:
@@ -231,9 +234,6 @@ class ImportProgress(BaseModel):
                 return None
             return (datetime.now() - self.start_time).total_seconds()
         return (self.end_time - self.start_time).total_seconds()
-
-    class Config:
-        from_attributes = True
 
 class BulkImportResponse(BaseModel):
     message: str

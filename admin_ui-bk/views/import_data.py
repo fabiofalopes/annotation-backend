@@ -286,16 +286,13 @@ def show_import_data_view() -> None:
                                                 project_id=selected_project_id,
                                                 file=tmp_file.name,
                                                 name=container_name,
-                                                metadata_columns=json.dumps(column_mapping)
+                                                metadata_columns=json.dumps(column_mapping) if column_mapping else None
                                             )
                                             
                                             # Show import progress
-                                            if result:
+                                            if result and 'import_id' in result:
                                                 st.write("### Import Progress")
-                                                st.write(f"Import ID: {result['id']}")
-                                                st.write(f"Status: {result['status']}")
-                                                st.write(f"Container ID: {result['container_id']}")
-                                                st.write(f"Start Time: {result['start_time']}")
+                                                st.write(f"Import ID: {result['import_id']}")
                                                 
                                                 # Create progress bar
                                                 progress_bar = st.progress(0)
@@ -308,7 +305,7 @@ def show_import_data_view() -> None:
                                                 
                                                 while retry_count < max_retries:
                                                     try:
-                                                        progress = st.session_state.admin.get_import_progress(result['id'])
+                                                        progress = st.session_state.admin.get_import_progress(result['import_id'])
                                                         if progress:
                                                             if progress['total_rows'] > 0:
                                                                 percentage = progress['processed_rows'] / progress['total_rows']
@@ -352,15 +349,11 @@ def show_import_data_view() -> None:
                                                         "Import timed out. Please check the status in the Imports section.",
                                                         "warning"
                                                     )
-                                                    
-                                        else:
-                                            # For document data, we need to implement document import
-                                            # This should be implemented in the API first
-                                            notification(
-                                                "Document import not yet implemented. Please implement in the API first.",
-                                                "error"
-                                            )
-                                            return
+                                            else:
+                                                notification(
+                                                    f"Failed to start import: {result.get('detail', 'Unknown error')}",
+                                                    "error"
+                                                )
                                             
                                     # Clean up temporary file
                                     os.unlink(tmp_file.name)

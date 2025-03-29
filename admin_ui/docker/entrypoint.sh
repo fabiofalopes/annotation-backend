@@ -7,7 +7,9 @@ until curl -f http://annotation_api:8000/docs > /dev/null 2>&1; do
     echo "API is unavailable - sleeping"
     sleep 2
 done
+
 echo "API is up - starting admin UI"
 
-# Run the command specified in CMD (streamlit)
-exec "$@" 
+# Start Streamlit
+cd /app/admin_ui/src
+exec streamlit run app.py --server.port=8501 --server.address=0.0.0.0 

@@ -23,27 +23,17 @@ services:
       retries: 3
       start_period: 10s
 
-  admin_ui:
+  react_admin_ui:
     build:
-      context: .
-      dockerfile: Dockerfile.streamlit
+      context: ./react-admin-ui
+      dockerfile: Dockerfile
     ports:
-      - "8501:8501"
-    volumes:
-      - ./admin_ui:/app/admin_ui
+      - "3000:80"
     environment:
-      - ANNO_API_URL=http://annotation_api:8000
-      - PYTHONPATH=/app
-      - ENVIRONMENT=development
+      - VITE_API_URL=http://localhost:8000
     depends_on:
       annotation_api:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
 volumes:
   data:

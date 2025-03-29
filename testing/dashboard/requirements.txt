@@ -1,0 +1,7 @@
+streamlit>=1.32.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+streamlit-option-menu>=0.3.12
+streamlit-aggrid>=0.3.4
+streamlit-lottie>=0.0.5
+pandas>=2.0.0 

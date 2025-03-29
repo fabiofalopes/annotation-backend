@@ -62,6 +62,7 @@ class DataContainer(Base):
     project = relationship("Project", back_populates="containers")
     items = relationship("DataItem", back_populates="container", cascade="all, delete-orphan")
     created_by = relationship("User")
+    import_progress = relationship("ImportProgress", back_populates="container")
 
 class DataItem(Base):
     """Individual item that can be annotated (e.g., message, image)"""
@@ -95,4 +96,21 @@ class Annotation(Base):
 
     # Relationships
     item = relationship("DataItem", back_populates="annotations")
-    created_by = relationship("User", back_populates="annotations") 
+    created_by = relationship("User", back_populates="annotations")
+
+class ImportProgress(Base):
+    __tablename__ = "import_progress"
+
+    id = Column(String, primary_key=True)
+    status = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    total_rows = Column(Integer, default=0)
+    processed_rows = Column(Integer, default=0)
+    errors = Column(JSON, default=list)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    container_id = Column(Integer, ForeignKey("data_containers.id"), nullable=True)
+    metadata_columns = Column(JSON, nullable=True)
+
+    # Relationship with DataContainer
+    container = relationship("DataContainer", back_populates="import_progress") 

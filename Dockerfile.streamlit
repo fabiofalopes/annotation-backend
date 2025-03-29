@@ -2,8 +2,7 @@ FROM python:3.11-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONDONTWRITEBYTECODE=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -12,25 +11,25 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
-WORKDIR /app
+WORKDIR /app/admin_ui/src
 
-# Copy requirements
-COPY requirements.txt .
+# Copy requirements first for better caching
+COPY admin_ui/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir streamlit pandas tabulate
+# Copy entrypoint script and make it executable
+COPY admin_ui/docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Copy application code
-COPY app/ /app/app/
-COPY admin_ui/ /app/admin_ui/
+COPY admin_ui/src /app/admin_ui/src
 
-# Make entrypoint executable and ensure it has the correct line endings
-RUN chmod +x /app/admin_ui/docker_entrypoint.sh \
-    && sed -i 's/\r$//' /app/admin_ui/docker_entrypoint.sh
+# Expose port
+EXPOSE 8501
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl --fail http://localhost:8501/_stcore/health
 
 # Set entrypoint
-ENTRYPOINT ["/app/admin_ui/docker_entrypoint.sh"]
-
-# Default command
-CMD ["streamlit", "run", "admin_ui/main.py", "--server.port=8501", "--server.address=0.0.0.0"] 
+ENTRYPOINT ["/app/entrypoint.sh"] 

@@ -4,7 +4,7 @@ from sqladmin import Admin, ModelView
 from sqlalchemy.orm import Session
 
 from app.database import create_tables, engine, get_db
-from app.models import User, Project, DataContainer, DataItem, Annotation
+from app.models import User, Project, DataContainer, DataItem, Annotation, ImportProgress
 from app.auth import auth_router, create_user
 from app.api.endpoints.users import router as user_router
 from app.api.endpoints.chat_disentanglement import router as chat_disentanglement_router
@@ -18,18 +18,23 @@ from app.api.admin.items import router as admin_items_router
 from app.api.admin.annotations import router as admin_annotations_router
 
 from app.settings import settings
+from app.core.config import settings as core_settings
+from app.db.base import init_db
 
 # FastAPI app
 app = FastAPI(
-    title="Annotation Backend",
+    title=core_settings.PROJECT_NAME,
     description="A simple API for managing annotations",
-    version="0.1.0"
+    version="0.1.0",
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.environment == "development" else [],
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,7 +49,10 @@ app.include_router(chat_disentanglement_router, prefix="/chat-disentanglement", 
 admin_app = FastAPI(
     title="Annotation Backend Admin",
     description="Administrative endpoints for managing the annotation system",
-    version="0.1.0"
+    version="0.1.0",
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 admin_app.include_router(admin_users_router, prefix="/users", tags=["admin-users"])
@@ -129,6 +137,9 @@ admin.add_view(AnnotationAdmin)
 # Create tables and default admin user
 @app.on_event("startup")
 async def startup_event():
+    # Initialize database
+    init_db()
+    
     create_tables()
     
     # Create default admin user if no users exist
@@ -146,4 +157,8 @@ async def startup_event():
             )
             print("Created default admin user (username: admin, password: admin123)")
         except Exception as e:
-            print(f"Error creating default admin user: {e}") 
+            print(f"Error creating default admin user: {e}")
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to Annotation Backend API"} 
